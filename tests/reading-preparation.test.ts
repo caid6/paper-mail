@@ -30,7 +30,8 @@ async function until(check:()=>boolean){
  while(!check()){if(Date.now()>end)assert.fail('后台任务未在测试时限内完成');await new Promise(resolve=>setTimeout(resolve,10));}
 }
 test('后台准备按邮箱、影响因子和质控状态派发，跨方向去重且保留终态',()=>{
- const db=fixture();const oldKey=process.env.AI_API_KEY;process.env.AI_API_KEY='test';
+ const db=fixture();const oldKey=process.env.AI_API_KEY;const oldModel=process.env.AI_MODEL;
+ process.env.AI_API_KEY='test';process.env.AI_MODEL='test-text';
  try{
   for(const [id,fields] of [['778',{archived:1}],['779',{in_library:0}],['780',{impact_factor:9}],['781',{}]] as const){
    upsertPaper(db,{...paper,id:'pmid:'+id},'medical-ai');
@@ -51,7 +52,11 @@ test('后台准备按邮箱、影响因子和质控状态派发，跨方向去�
   assert.deepEqual(db.prepare("SELECT status,error FROM downloads WHERE paper_id=?").get(paper.id),Object.assign(Object.create(null),{status:'needs_browser',error:'requires access'}));
   assert.equal(db.prepare('SELECT COUNT(*) n FROM downloads').get()!.n,2);
   assert.equal(db.prepare('SELECT status FROM fulltexts WHERE paper_id=?').get(paper.id)!.status,'unavailable');
- }finally{db.close();if(oldKey===undefined)delete process.env.AI_API_KEY;else process.env.AI_API_KEY=oldKey;}
+ }finally{
+  db.close();
+  if(oldKey===undefined)delete process.env.AI_API_KEY;else process.env.AI_API_KEY=oldKey;
+  if(oldModel===undefined)delete process.env.AI_MODEL;else process.env.AI_MODEL=oldModel;
+ }
 });
 test('官方 JATS 按主图文件清单精确匹配，验证身份且不混入补图',()=>{
  const result=parsePMCXML(figureXML,'PMC777','777',[imageURL]);

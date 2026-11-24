@@ -1,9 +1,9 @@
-import {aiKey} from './ai.ts';
+import {aiConfigured} from './ai.ts';
 import type {DB} from './core.ts';
 import {journalWhere} from './journals.ts';
 
 export function readingScope(db:DB){
-  const waitingForQuality=aiKey()? `AND NOT EXISTS (
+  const waitingForQuality=aiConfigured()? `AND NOT EXISTS (
     SELECT 1 FROM relevance_reviews r JOIN paper_subscriptions ps
       ON ps.paper_id=r.paper_id AND ps.subscription_id=r.subscription_id
     WHERE r.paper_id=p.id AND r.status IN ('pending','running')

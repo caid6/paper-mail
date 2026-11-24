@@ -6,7 +6,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { connect, settings, setSetting, subscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
 import { fetchPubmed, pubmedDefaults, pubmedLegacyQueries,medicalAgentsExplanation, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
-import { generateDigest, generateRelevanceReview, activeAI, aiKey, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
+import { generateDigest, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
 import {listSchema,listPapers,getPaper,topicCounts,saveSubscription} from './library.ts';
 import {enrichLibrary,enrichPaper,journalFilter,journalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
 import {downloadInfo,downloadState,requestDownload,downloadedPath} from './downloads.ts';
@@ -46,7 +46,7 @@ async function withLibraryLock<T>(operation:()=>Promise<T>|T):Promise<T>{const p
 type SyncOptions={dateClause?:string;initialize?:Initialization};
 async function sync(kind:string,options:SyncOptions={}){if(syncing)return;syncing=true;try{await withLibraryLock(()=>performSync(kind,options));}finally{syncing=false;}}
 async function pumpDigests(){
-  if(!aiKey())return;
+  if(!aiConfigured())return;
   while(workers<2){
     const row=db.prepare(`SELECT * FROM papers p WHERE digest_status='pending' AND (in_library=1 OR starred=1) AND ${journalWhere(db)} ORDER BY starred DESC,published DESC LIMIT 1`).get();
     if(!row)break;
@@ -61,7 +61,7 @@ async function pumpDigests(){
   }
 }
 async function pumpQuality(){
-  if(settings(db).quality_enabled!=='true'||!aiKey())return;
+  if(settings(db).quality_enabled!=='true'||!aiConfigured())return;
   while(qualityWorkers<2){
     const row:any=db.prepare(`SELECT r.paper_id,r.subscription_id,p.title,p.abstract,p.authors,p.published,p.updated,p.categories,p.url,p.pdf_url,p.source,p.journal,p.publication_date,p.indexed_at,p.doi,p.pmcid,p.pub_types,p.full_text_url,s.name AS topic_name,s.description AS topic_description,s.query AS topic_query
       FROM relevance_reviews r JOIN papers p ON p.id=r.paper_id JOIN subscriptions s ON s.id=r.subscription_id
@@ -224,7 +224,7 @@ app.post('/api/papers/:id/digest',(req,res)=>{
   const p=db.prepare('SELECT * FROM papers WHERE id=?').get(req.params.id);
   if(!p)return res.status(404).json({error:'论文不存在'});
   if(!String(p.abstract).trim())return res.status(409).json({error:'PubMed 未提供摘要，请打开全文阅读'});
-  if(!aiKey())return res.status(409).json({error:'请先在设置中配置 AI API Key'});
+  if(!aiConfigured())return res.status(409).json({error:'请先在设置 → API 与模型中完成配置'});
   if(p.digest_status!=='generating')db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE id=?").run(req.params.id);
   void pumpDigests();res.json({ok:true});
 });
@@ -270,7 +270,7 @@ app.put('/api/ai',async(req,res)=>{
 app.post('/api/papers/bulk',(req,res)=>{const {ids,action}=z.object({ids:z.array(z.string()).min(1).max(50),action:z.enum(['read','unread','archive','restore','star','unstar'])}).parse(req.body);const actions:Record<string,[string,number]>={read:['is_read',1],unread:['is_read',0],archive:['archived',1],restore:['archived',0],star:['starred',1],unstar:['starred',0]};const [field,value]=actions[action];db.exec('BEGIN IMMEDIATE');try{for(const id of ids){db.prepare(`UPDATE papers SET ${field}=? WHERE id=?`).run(value,id);if(action==='restore')db.prepare('UPDATE papers SET in_library=1 WHERE id=?').run(id);}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}if(action==='restore')prepareReading(db,root);res.json({ok:true});});
 app.get('/api/papers/:id/figures',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(figureState(db,req.params.id));});
 app.post('/api/papers/:id/fulltext',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});queueFulltext(db,req.params.id);prepareReading(db,root);res.status(202).json({ok:true});});
-app.post('/api/figures/:id/retry',(req,res)=>{if(!aiKey())return res.status(409).json({error:'请先配置 AI 服务'});db.prepare("UPDATE figures SET status='pending',error=NULL WHERE id=? AND status='error'").run(req.params.id);void pumpFigures(db,root);res.json({ok:true});});
+app.post('/api/figures/:id/retry',(req,res)=>{if(!aiConfigured())return res.status(409).json({error:'请先配置 AI 服务'});db.prepare("UPDATE figures SET status='pending',error=NULL WHERE id=? AND status='error'").run(req.params.id);void pumpFigures(db,root);res.json({ok:true});});
 app.get('/api/figures/:id/image',(req,res)=>{const f:any=db.prepare('SELECT image_path,image_type FROM figures WHERE id=?').get(req.params.id);if(!f?.image_path)return res.sendStatus(404);res.setHeader('Content-Type',f.image_type);res.setHeader('Cache-Control','private,max-age=86400');res.sendFile(path.join(root,'data','figures',f.image_path));});
 app.get('/api/export',(_req,res)=>{
   const rows=db.prepare('SELECT * FROM papers WHERE starred=1 ORDER BY published DESC').all().map(p=>hydrate(db,p));

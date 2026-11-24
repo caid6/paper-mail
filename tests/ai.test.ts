@@ -1,6 +1,32 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion} from '../server/ai.ts';
+import {aiConfig,aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion} from '../server/ai.ts';
+
+test('发布版没有预填模型，未完成本机配置时不向模型服务发请求',async()=>{
+ const keys=['AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL','AI_API_KEY','GEMINI_API_KEY','GEMINI_MODEL'];
+ const previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+ const originalFetch=globalThis.fetch;
+ try{
+  for(const key of keys)delete process.env[key];
+  assert.equal(aiConfig().configured,false);
+  assert.equal(aiConfig().model,'');
+  assert.equal(aiConfig().figure_model,'');
+  process.env.AI_PROVIDER='compatible';
+  process.env.AI_API_KEY='local-test-key';
+  assert.equal(aiConfig().base_url,'');
+  globalThis.fetch=async()=>assert.fail('Incomplete settings must not call a model service');
+  await assert.rejects(textCompletion('阅读论文',[]),/配置服务地址、API Key 和模型/);
+  Object.assign(process.env,{AI_BASE_URL:'https://models.example/v1',AI_MODEL:'selected-text',AI_FIGURE_MODEL:'selected-vision'});
+  assert.deepEqual(aiConfig(),{
+   provider:'compatible',base_url:'https://models.example/v1',model:'selected-text',figure_model:'selected-vision',configured:true,
+  });
+ }finally{
+  globalThis.fetch=originalFetch;
+  for(const [key,value] of Object.entries(previous)){
+   if(value===undefined)delete process.env[key];else process.env[key]=value;
+  }
+ }
+});
 
 test('OpenAI compatible service root normalizes to v1 and requires credentials on provider change',()=>{
  const service=aiServiceSchema.parse({provider:'compatible',base_url:'https://models.example.com/',key:'secret'});

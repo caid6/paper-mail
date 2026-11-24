@@ -1,4 +1,4 @@
-import {aiKey} from './ai.ts';
+import {aiConfigured} from './ai.ts';
 import type {DB} from './core.ts';
 import {downloadedPath,pumpDownloads} from './downloads.ts';
 import {markMissingDownload,pumpDocumentIndexes} from './documents.ts';
@@ -39,5 +39,5 @@ export function readingPreparationStats(db:DB){
      OR (d.status='ready' AND d.index_error IS NULL AND (pdf.file_name IS NULL OR pdf.file_name<>d.file_name))
      OR t.status IN ('pending','loading')
      OR EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND
-       (f.status='generating' OR (f.status='pending' AND (? OR f.image_path='')))))`).get(Number(!!aiKey()));
+       (f.status='generating' OR (f.status='pending' AND (? OR f.image_path='')))))`).get(Number(aiConfigured()));
 }

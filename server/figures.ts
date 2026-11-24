@@ -4,7 +4,7 @@ import path from 'node:path';
 import {createHash} from 'node:crypto';
 import type {DB} from './core.ts';
 import {getPaper} from './library.ts';
-import {aiKey,activeAI,generateFigureAnalysis} from './ai.ts';
+import {aiConfigured,activeAI,generateFigureAnalysis} from './ai.ts';
 import {readingScope} from './reading-scope.ts';
 import {fetchPMC,PMCUnavailable} from './pmc.ts';
 export type ParsedFigure={id:string;label:string;caption:string;context:string;alt:string;image_url:string;source_url:string;position:number};
@@ -40,7 +40,7 @@ export function figureState(db:DB,paperId:string){
    return {...figure,status,model,analysis:figure.analysis?JSON.parse(String(figure.analysis)):null,
     image_src:image_path?'/api/figures/'+encodeURIComponent(String(figure.id))+'/image':null};
   });
- return {...fulltext,status,pdf_available,ai_configured:!!aiKey(),figures};
+ return {...fulltext,status,pdf_available,ai_configured:aiConfigured(),figures};
 }
 const figureWorkers=new WeakSet<DB>();
 const fulltextWorkers=new WeakSet<DB>();
@@ -92,7 +92,7 @@ export async function pumpFigures(db:DB,root:string){
  try{for(;;){
   const row:any=db.prepare(`SELECT f.* FROM figures f JOIN fulltexts t ON t.paper_id=f.paper_id JOIN papers p ON p.id=f.paper_id
     WHERE f.status='pending' AND (? OR f.image_path='') AND (t.automatic=0 OR (${readingScope(db)}))
-    ORDER BY p.received_at DESC,p.published DESC,p.id DESC,f.position LIMIT 1`).get(Number(!!aiKey()));
+    ORDER BY p.received_at DESC,p.published DESC,p.id DESC,f.position LIMIT 1`).get(Number(aiConfigured()));
   if(!row)break;
   db.prepare("UPDATE figures SET status='generating',error=NULL WHERE id=?").run(row.id);
   try{
@@ -106,7 +106,7 @@ export async function pumpFigures(db:DB,root:string){
     if(md5&&createHash('md5').update(data).digest('hex')!==md5)throw new Error('主图内容校验失败');
     mkdirSync(path.join(root,'data','figures'),{recursive:true});writeFileSync(path.join(root,'data','figures',row.id),data);db.prepare('UPDATE figures SET image_path=?,image_type=? WHERE id=?').run(row.id,type,row.id);
    }
-   if(!aiKey()){
+   if(!aiConfigured()){
     db.prepare("UPDATE figures SET status='pending' WHERE id=?").run(row.id);
     continue;
    }
