@@ -1,0 +1,2 @@
+export async function api<T=any>(url:string,method='GET',body?:unknown,signal?:AbortSignal):Promise<T>{const res=await fetch('/api'+url,{method,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined,signal});const data=await res.json();if(!res.ok)throw new Error(data.error||'请求失败');return data;}
+export const paperPath=(id:string)=>'/papers/'+encodeURIComponent(id);

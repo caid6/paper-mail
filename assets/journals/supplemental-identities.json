@@ -1,0 +1,339 @@
+[
+  {
+    "name": "Cell Biomaterials",
+    "issns": [
+      "3050-5623"
+    ],
+    "url": "https://www.ncbi.nlm.nih.gov/nlmcatalog/137797"
+  },
+  {
+    "name": "Chinese Critical Care Medicine",
+    "issns": [
+      "2095-4352"
+    ],
+    "url": "https://wprim.whocc.org.cn/journal/detail?from=web&id=287"
+  },
+  {
+    "name": "Communications Sustainability",
+    "issns": [
+      "3059-4308"
+    ],
+    "url": "https://www.nature.com/commssustain"
+  },
+  {
+    "name": "Methodist DeBakey Cardiovascular Journal",
+    "issns": [
+      "1947-6094",
+      "1947-6108"
+    ],
+    "url": "https://www.ncbi.nlm.nih.gov/nlmcatalog/101508600"
+  },
+  {
+    "name": "Nature Health",
+    "issns": [
+      "3005-0693"
+    ],
+    "url": "https://www.nature.com/naturehealth"
+  },
+  {
+    "name": "Nature Reviews Biodiversity",
+    "issns": [
+      "3005-0677"
+    ],
+    "url": "https://www.nature.com/nrbd"
+  },
+  {
+    "name": "Nature Reviews Clean Technology",
+    "issns": [
+      "3005-0685"
+    ],
+    "url": "https://www.nature.com/nrct"
+  },
+  {
+    "name": "Nature Sensors",
+    "issns": [
+      "3059-4499"
+    ],
+    "url": "https://www.nature.com/natsensors"
+  },
+  {
+    "name": "npj Acoustics",
+    "issns": [
+      "3005-141X"
+    ],
+    "url": "https://www.nature.com/npjacoustics"
+  },
+  {
+    "name": "npj Advanced Manufacturing",
+    "issns": [
+      "3004-8621"
+    ],
+    "url": "https://www.nature.com/npjadvmanuf/"
+  },
+  {
+    "name": "npj Artificial Intelligence",
+    "issns": [
+      "3005-1460"
+    ],
+    "url": "https://www.nature.com/npjai"
+  },
+  {
+    "name": "npj Biological Physics and Mechanics",
+    "issns": [
+      "3004-863X"
+    ],
+    "url": "https://www.nature.com/npjbiolphysmech/"
+  },
+  {
+    "name": "npj Biological Timing and Sleep",
+    "issns": [
+      "2948-281X"
+    ],
+    "url": "https://www.nature.com/npjbts"
+  },
+  {
+    "name": "npj Biomedical Innovations",
+    "issns": [
+      "3005-1444"
+    ],
+    "url": "https://www.nature.com/npjbiomedinnov/"
+  },
+  {
+    "name": "npj Biosensing",
+    "issns": [
+      "3004-8656"
+    ],
+    "url": "https://www.nature.com/npjbiosensing/"
+  },
+  {
+    "name": "npj Cardiovascular Health",
+    "issns": [
+      "2948-2836"
+    ],
+    "url": "https://www.nature.com/npjcardiohealth"
+  },
+  {
+    "name": "npj Clean Air",
+    "issns": [
+      "3059-2240"
+    ],
+    "url": "https://www.nature.com/npjcleanair"
+  },
+  {
+    "name": "npj Clean Energy",
+    "issns": [
+      "3059-2232"
+    ],
+    "url": "https://www.nature.com/npjcleanenergy"
+  },
+  {
+    "name": "npj Complexity",
+    "issns": [
+      "2731-8753"
+    ],
+    "url": "https://www.nature.com/npjcomplex/"
+  },
+  {
+    "name": "npj Dementia",
+    "issns": [
+      "3005-1940"
+    ],
+    "url": "https://www.nature.com/npjdementia"
+  },
+  {
+    "name": "npj Digital Public Health",
+    "issns": [
+      "3091-2784"
+    ],
+    "url": "https://www.nature.com/npjdigipubhealth"
+  },
+  {
+    "name": "npj Digital Surgery",
+    "issns": [
+      "3091-2806"
+    ],
+    "url": "https://www.nature.com/npjdigisurg"
+  },
+  {
+    "name": "npj Drug Discovery",
+    "issns": [
+      "3005-1452"
+    ],
+    "url": "https://www.nature.com/npjdrugdiscov/"
+  },
+  {
+    "name": "npj Emerging Contaminants",
+    "issns": [
+      "3059-3719"
+    ],
+    "url": "https://www.nature.com/npjemergcontam"
+  },
+  {
+    "name": "npj Energy Materials",
+    "issns": [
+      "3059-3735"
+    ],
+    "url": "https://www.nature.com/npjenergymats"
+  },
+  {
+    "name": "npj Entomology",
+    "issns": [
+      "3059-3298"
+    ],
+    "url": "https://www.nature.com/npjentomology"
+  },
+  {
+    "name": "npj Environmental Social Sciences",
+    "issns": [
+      "3059-3271"
+    ],
+    "url": "https://www.nature.com/npjenvsocsci"
+  },
+  {
+    "name": "npj Exercise Medicine and Health",
+    "issns": [
+      "3059-331X"
+    ],
+    "url": "https://www.nature.com/npjexercisemed"
+  },
+  {
+    "name": "npj Gut and Liver",
+    "issns": [
+      "3004-9806"
+    ],
+    "url": "https://www.nature.com/npjgutliver/"
+  },
+  {
+    "name": "npj Health Systems",
+    "issns": [
+      "3005-1959"
+    ],
+    "url": "https://www.nature.com/npjhealthsyst/"
+  },
+  {
+    "name": "npj Imaging",
+    "issns": [
+      "2948-197X"
+    ],
+    "url": "https://www.nature.com/npjimaging/"
+  },
+  {
+    "name": "npj Materials Sustainability",
+    "issns": [
+      "2948-1775"
+    ],
+    "url": "https://www.nature.com/npjmatsustain/"
+  },
+  {
+    "name": "npj Metabolic Health and Disease",
+    "issns": [
+      "2948-2828"
+    ],
+    "url": "https://www.nature.com/npjmetabhealth/"
+  },
+  {
+    "name": "npj Metamaterials",
+    "issns": [
+      "3059-3727"
+    ],
+    "url": "https://www.nature.com/npjmetamat/journal-information"
+  },
+  {
+    "name": "npj Nanophotonics",
+    "issns": [
+      "2948-216X"
+    ],
+    "url": "https://www.nature.com/npjnanophoton/"
+  },
+  {
+    "name": "npj Natural Hazards",
+    "issns": [
+      "2948-2100"
+    ],
+    "url": "https://www.nature.com/npjnathazards/"
+  },
+  {
+    "name": "npj Robotics",
+    "issns": [
+      "2731-4278"
+    ],
+    "url": "http://www.nature.com/npjrobot/"
+  },
+  {
+    "name": "npj Science of Plants",
+    "issns": [
+      "3005-1401"
+    ],
+    "url": "https://www.nature.com/npjsciplants"
+  },
+  {
+    "name": "npj Soft Matter",
+    "issns": [
+      "3059-3263"
+    ],
+    "url": "https://www.nature.com/npjsoftmat"
+  },
+  {
+    "name": "npj Space Exploration",
+    "issns": [
+      "3059-3700"
+    ],
+    "url": "https://www.nature.com/npjspaceexplor/articles"
+  },
+  {
+    "name": "npj Spintronics",
+    "issns": [
+      "2948-2119"
+    ],
+    "url": "https://www.nature.com/npjspintronics/"
+  },
+  {
+    "name": "npj Sustainable Agriculture",
+    "issns": [
+      "2731-9202"
+    ],
+    "url": "https://www.nature.com/npjsustainagric/"
+  },
+  {
+    "name": "npj Sustainable Mobility and Transport",
+    "issns": [
+      "3004-8664"
+    ],
+    "url": "https://www.nature.com/npjsustainmobil/"
+  },
+  {
+    "name": "npj Thermal Science and Engineering",
+    "issns": [
+      "3059-3301"
+    ],
+    "url": "https://www.nature.com/npjthermscieng"
+  },
+  {
+    "name": "npj Unconventional Computing",
+    "issns": [
+      "3004-8672"
+    ],
+    "url": "https://www.nature.com/npjunconvcomput/"
+  },
+  {
+    "name": "npj Veterinary Sciences",
+    "issns": [
+      "3059-328X"
+    ],
+    "url": "https://www.nature.com/npjvetsci"
+  },
+  {
+    "name": "npj Wireless Technology",
+    "issns": [
+      "3059-4391"
+    ],
+    "url": "https://www.nature.com/npjwireltech"
+  },
+  {
+    "name": "npj Women's Health",
+    "issns": [
+      "2948-1716"
+    ],
+    "url": "https://www.nature.com/npjwomenshealth/"
+  }
+]
