@@ -1,4 +1,4 @@
-# 研邮 · Paper-mail 2.14.1
+# 研邮 · Paper-mail 2.14.2
 
 开发交接与维护规范见 [DEVELOPMENT.md](DEVELOPMENT.md)。后续修改请同步更新该文档的运行状态和变更记录。
 
