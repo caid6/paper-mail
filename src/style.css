@@ -498,13 +498,6 @@ svg {
 .segmented>button:hover {
   color: #3563e9;
 }
-.sort-select {
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font-size: 11px;
-  color: #748197;
-}
 .list-bulk-toolbar {
   display: flex;
   align-items: center;
@@ -2908,10 +2901,6 @@ svg {
   .segmented>button {
     font-size: 11px;
     padding: 6px 10px;
-  }
-  .sort-select {
-    font-size: 11px;
-    color: #748197;
   }
   .list-bulk-toolbar {
     padding: 0 23px;

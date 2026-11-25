@@ -7,11 +7,12 @@ import {connect,upsertPaper} from '../server/core.ts';
 import {getPaper,listPapers,listSchema,mailboxCounts,recordQualityRemoval,saveSubscription,setArchive} from '../server/library.ts';
 function library(){const db=connect(':memory:');for(let i=1;i<=37;i++)upsertPaper(db,{id:'pmid:'+i,title:'Clinical model '+i,abstract:'Study abstract',authors:['Author'],categories:[],published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+i,pdf_url:'',source:'pubmed',journal:i%2?'Journal A':'Journal B'},'medical-ai');return db;}
 test('分页覆盖所有论文且页面不重复，列表只返回必要字段',()=>{const db=library();const ids:string[]=[];for(let page=1;page<=3;page++){const r=listPapers(db,listSchema.parse({page,page_size:15}));assert.equal(r.total,37);assert.equal(r.pages,3);assert.equal(r.items.length,page===3?7:15);assert.equal('abstract' in r.items[0],false);ids.push(...r.items.map(x=>String(x.id)));}assert.equal(new Set(ids).size,37);assert.equal(listPapers(db,listSchema.parse({page:100,page_size:15})).page,3);db.close();});
-test('默认按 PubMed 收录时间排序并显示 50 篇，旧排序参数使用同一字段',()=>{
+test('默认按收信时间排序并显示 50 篇，旧排序参数不会改变顺序',()=>{
  const defaults=listSchema.parse({});
- assert.equal(defaults.sort,'indexed_at');
  assert.equal(defaults.page_size,50);
- assert.equal(listSchema.parse({sort:'published'}).sort,'indexed_at');
+ assert.equal('sort' in defaults,false);
+ assert.equal('sort' in listSchema.parse({sort:'indexed_at'}),false);
+ assert.equal('sort' in listSchema.parse({sort:'published'}),false);
 });
 test('已读、未读、期刊搜索和文件夹过滤均在服务端执行',()=>{const db=library();db.prepare("UPDATE papers SET is_read=1 WHERE id IN ('pmid:1','pmid:2')").run();setArchive(db,'pmid:3',true);assert.equal(listPapers(db,listSchema.parse({filter:'unread'})).total,34);assert.equal(listPapers(db,listSchema.parse({filter:'read'})).total,2);assert.equal(listPapers(db,listSchema.parse({q:'Journal B'})).total,18);assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,1);assert.equal(listPapers(db,listSchema.parse({q:"' OR 1=1 --"})).total,0);db.close();});
 
@@ -60,7 +61,7 @@ test('旧数据库归档历史保留，来源未记录的论文仍可恢复',()=
 test('论文列表返回独立中文题名并支持中文搜索',()=>{const db=library();db.prepare("UPDATE papers SET title_zh='临床人工智能基础模型' WHERE id='pmid:1'").run();const items=listPapers(db,listSchema.parse({page_size:50})).items;assert.equal((items.find(item=>item.id==='pmid:1') as any).title_zh,'临床人工智能基础模型');assert.equal(listPapers(db,listSchema.parse({q:'人工智能基础模型'})).total,1);db.close();});
 test('多方向只增加标签，方向修改重新关联，私人阅读记录不变',()=>{const db=library();db.prepare("UPDATE papers SET is_read=1,starred=1,note='研究笔记' WHERE id='pmid:1'").run();const topic={name:'交叉方向',query:'new query',description:'我的研究',query_explanation:'逻辑',color:'#3366ff',enabled:true};saveSubscription(db,'cross',topic,['pmid:1','pmid:2']);let r=listPapers(db,listSchema.parse({folder:'sub:cross'}));assert.equal(r.total,2);assert.equal(r.items.find(x=>x.id==='pmid:1')!.subscriptions.length,2);saveSubscription(db,'cross',{...topic,query:'changed'},['pmid:1']);assert.equal(listPapers(db,listSchema.parse({folder:'sub:cross'})).total,1);const p=db.prepare("SELECT * FROM papers WHERE id='pmid:1'").get()!;assert.equal(p.is_read,1);assert.equal(p.starred,1);assert.equal(p.note,'研究笔记');assert.equal(db.prepare('SELECT COUNT(*) AS n FROM papers').get()!.n,37);db.close();});
 
-test('收录、收信、发表排序各使用对应日期，并返回日期原值',()=>{
+test('收件箱固定按收信时间倒序，详情保留准确发表日期',()=>{
  const db=library();
  try{
   db.prepare("UPDATE papers SET archived=1 WHERE id NOT IN ('pmid:1','pmid:2','pmid:3','pmid:4')").run();
@@ -69,13 +70,13 @@ test('收录、收信、发表排序各使用对应日期，并返回日期原�
   setDates.run('2026-11-20','2026-11-25T01:30:00Z','2026-08-07','2026-11-20','pmid:2');
   setDates.run('2026-11-22','2026-11-23T01:30:00Z','2026-08-08','2026-11-22','pmid:3');
   setDates.run('','2026-11-22T01:30:00Z','','2026-12-01','pmid:4');
-  const byDate=(sort:string)=>listPapers(db,listSchema.parse({sort})).items;
-  const byIndexed=byDate('indexed_at');
-  assert.deepEqual(byIndexed.map(p=>p.id),['pmid:1','pmid:3','pmid:2','pmid:4']);
-  assert.deepEqual(byDate('received_at').map(p=>p.id),['pmid:2','pmid:1','pmid:3','pmid:4']);
-  assert.deepEqual(byDate('publication_date').map(p=>p.id),['pmid:3','pmid:2','pmid:1','pmid:4']);
-  assert.equal(byIndexed[0].indexed_at,'2026-11-23');
-  assert.equal(byIndexed[0].received_at,'2026-11-24T03:35:10.943Z');
-  assert.equal(byIndexed[0].publication_date,'2026-08-06');
+  const expected=['pmid:2','pmid:1','pmid:3','pmid:4'];
+  const inbox=listPapers(db,listSchema.parse({})).items;
+  assert.deepEqual(inbox.map(p=>p.id),expected);
+  assert.deepEqual(listPapers(db,listSchema.parse({sort:'indexed_at'})).items.map(p=>p.id),expected);
+  assert.deepEqual(listPapers(db,listSchema.parse({sort:'publication_date'})).items.map(p=>p.id),expected);
+  assert.deepEqual(listPapers(db,listSchema.parse({sort:'published'})).items.map(p=>p.id),expected);
+  assert.equal(inbox[1].received_at,'2026-11-24T03:35:10.943Z');
+  assert.equal(inbox[1].publication_date,'2026-08-06');
  }finally{db.close();}
 });

@@ -2,12 +2,10 @@ import {aiConfigured} from './ai.ts';
 import {z} from 'zod';
 import {type DB,type PaperInput,hydrate,upsertPaperRecord} from './core.ts';
 import {journalWhere} from './journals.ts';
-import {paperSortFields} from '../shared/paper-sort.ts';
 export const listSchema=z.object({
  folder:z.string().default('inbox'),
  q:z.string().max(500).default(''),
  filter:z.enum(['all','unread','read','ready']).default('all'),
- sort:z.enum([...paperSortFields,'published']).default('indexed_at').transform(value=>value==='published'?'indexed_at':value),
  page:z.coerce.number().int().min(1).default(1),
  page_size:z.coerce.number().int().min(5).max(50).default(50),
 });
@@ -56,13 +54,9 @@ export function listPapers(db:DB,opts:ListOptions){
  const sqlWhere=where.join(' AND ');
  const total=Number(db.prepare(`SELECT COUNT(*) AS n FROM papers p WHERE ${sqlWhere}`).get(...args)!.n);
  const pages=Math.max(1,Math.ceil(total/opts.page_size)),page=Math.min(opts.page,pages);
- // MEDLINE 文字日期只用明确记录的年份排序，保留显示时的原文。
- const sortDate=opts.sort==='publication_date'
-  ? "CASE WHEN p.publication_date GLOB '[0-9][0-9][0-9][0-9] *' THEN substr(p.publication_date,1,4) ELSE p.publication_date END"
-  : `p.${opts.sort}`;
  const rows=db.prepare(`SELECT p.id,p.title,p.title_zh,p.title_status,p.journal,p.publication_date,p.published,p.indexed_at,p.received_at,p.is_read,p.starred,(p.archived=1 OR p.in_library=0) AS archived,p.in_library,p.archive_origin,p.digest_status,p.source,p.pmcid,p.impact_factor,p.jif_label,p.jif_status,p.cas_zone,p.metric_year,p.metric_edition,p.metric_match
    FROM papers p WHERE ${sqlWhere}
-   ORDER BY ${sortDate} DESC,p.id DESC LIMIT ? OFFSET ?`).all(...args,opts.page_size,(page-1)*opts.page_size);
+   ORDER BY p.received_at DESC,p.id DESC LIMIT ? OFFSET ?`).all(...args,opts.page_size,(page-1)*opts.page_size);
  const topics=db.prepare('SELECT s.id,s.name,s.color FROM subscriptions s JOIN paper_subscriptions ps ON ps.subscription_id=s.id WHERE ps.paper_id=? ORDER BY s.rowid');
  const items=rows.map(row=>({
   ...row,
