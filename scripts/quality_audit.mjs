@@ -21,7 +21,11 @@ if(process.argv.includes('--apply')){
   const save=applyDb.prepare("INSERT INTO relevance_reviews(paper_id,subscription_id,status,verdict,reason,evidence,model,reviewed_at,error) VALUES(?,?, 'complete',?,?,?,?,?,NULL) ON CONFLICT(paper_id,subscription_id) DO UPDATE SET status='complete',verdict=excluded.verdict,reason=excluded.reason,evidence=excluded.evidence,model=excluded.model,reviewed_at=excluded.reviewed_at,error=NULL");
   const remove=applyDb.prepare('DELETE FROM paper_subscriptions WHERE paper_id=? AND subscription_id=?');const affected=new Set();
   for(const review of out){save.run(review.id,review.topic_id,review.verdict,review.reason,review.evidence,model,now);if(review.verdict==='irrelevant'){remove.run(review.id,review.topic_id);affected.add(review.id);}}
-  const archive=applyDb.prepare("UPDATE papers SET archived=1 WHERE id=? AND NOT EXISTS (SELECT 1 FROM paper_subscriptions WHERE paper_id=?)");for(const id of affected)archive.run(id,id);applyDb.exec('COMMIT');
+  const archive=applyDb.prepare(`UPDATE papers SET archived=1, archive_origin='quality' WHERE id=?
+    AND archive_origin IS NOT 'manual'
+    AND NOT EXISTS (SELECT 1 FROM paper_subscriptions WHERE paper_id=papers.id)`);
+  for(const id of affected)archive.run(id);
+  applyDb.exec('COMMIT');
  }catch(e){applyDb.exec('ROLLBACK');throw e;}finally{applyDb.close();}
 }
 console.log(JSON.stringify({input:rows.length,output:out.length,counts,groups:groups.length,applied:process.argv.includes('--apply')}));

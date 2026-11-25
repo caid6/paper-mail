@@ -62,7 +62,7 @@ export function parsePMCXML(xml:string,pmcid:string,pmid:string,media:string[]){
  });
  return {figures,source_url,license:$('article > front > article-meta > permissions').text().replace(/\s+/g,' ').trim()};
 }
-export async function fetchPMC(pmcid:string,pmid:string){
+async function readPMCManifest(pmcid:string,pmid:string){
  if(!/^PMC\d+$/.test(pmcid)||!/^\d+$/.test(pmid))throw new Error('PMC 文献标识无效');
  const xml=await (await ncbi('efetch.fcgi',{db:'pmc',id:pmcid.slice(3)})).text();
  const $=articleIdentity(xml,pmcid,pmid);
@@ -73,8 +73,21 @@ export async function fetchPMC(pmcid:string,pmid:string){
  if(!metadata.ok)throw new Error('PMC 文件清单请求失败（HTTP '+metadata.status+'）');
  const manifest=manifestSchema.parse(await metadata.json());
  if(manifest.pmcid!==pmcid||String(manifest.pmid)!==pmid||version!==pmcid+'.'+manifest.version)throw new Error('PMC 文件清单与文献身份不一致');
+ return {version,manifest,pdf_url:manifest.pdf_url?cloudURL(manifest.pdf_url,version):''};
+}
+const pendingManifests=new Map<string,ReturnType<typeof readPMCManifest>>();
+export function fetchPMCManifest(pmcid:string,pmid:string){
+ const key=pmcid+':'+pmid;
+ const pending=pendingManifests.get(key);
+ if(pending)return pending;
+ const request=readPMCManifest(pmcid,pmid).finally(()=>pendingManifests.delete(key));
+ pendingManifests.set(key,request);
+ return request;
+}
+export async function fetchPMC(pmcid:string,pmid:string){
+ const {version,manifest,pdf_url}=await fetchPMCManifest(pmcid,pmid);
  const fulltext=await fetch(cloudURL(manifest.xml_url,version),{signal:AbortSignal.timeout(45000),redirect:'error'});
  if(!fulltext.ok)throw new Error('PMC 正文请求失败（HTTP '+fulltext.status+'）');
  const parsed=parsePMCXML(await fulltext.text(),pmcid,pmid,(manifest.media_urls||[]).map(value=>cloudURL(value,version)));
- return {...parsed,pdf_url:manifest.pdf_url?cloudURL(manifest.pdf_url,version):''};
+ return {...parsed,pdf_url};
 }

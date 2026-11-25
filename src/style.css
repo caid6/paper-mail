@@ -462,6 +462,10 @@ svg {
   line-height: 1.8;
   margin: 9px 0 0;
 }
+.archive-views {
+  display: flex;
+  margin-top: 12px;
+}
 .list-filters {
   display: flex;
   align-items: center;
@@ -667,6 +671,9 @@ svg {
   border-radius: 4px;
   white-space: nowrap;
   font-size: 9px;
+}
+.removal-tag {
+  --tag-color: #6d7a90;
 }
 .row-read-state {
   position: absolute;

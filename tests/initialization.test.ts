@@ -9,7 +9,7 @@ function paper(id:string,date:string):PaperInput{
  return {id:'pmid:'+id,title:'Medical AI study '+id,abstract:'A clinical study.',authors:['A. Author'],categories:[],published:date,updated:date,url:'https://pubmed.ncbi.nlm.nih.gov/'+id+'/',pdf_url:'',source:'pubmed',journal:'Journal A',publication_date:date,indexed_at:date};
 }
 
-test('初始化按检索结果重建邮箱范围，归档窗外文献并保留阅读记录',()=>{
+test('初始化按检索结果重建邮箱范围，移出窗外文献并保留阅读记录',()=>{
  const db=connect(':memory:');
  try{
   const outside=paper('100','2026-08-01'),retained=paper('200','2026-11-10'),added=paper('300','2026-11-18');
@@ -21,7 +21,8 @@ test('初始化按检索结果重建邮箱范围，归档窗外文献并保留�
   const first=replaceLibrary(db,[{subscriptionId:'medical-ai',papers:[retained,added]},{subscriptionId:'medical-foundation',papers:[retained]}],options,'2026-11-20T00:00:00.000Z','2026-11-20',firstRun.lastInsertRowid);
   assert.deepEqual(first,{matched:2,inbox:2,added:1,previous:2});
   assert.equal(listPapers(db,listSchema.parse({folder:'inbox'})).total,2);
-  assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,1);
+  assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,0);
+  assert.equal(listPapers(db,listSchema.parse({folder:'removed'})).total,1);
   const preserved=db.prepare("SELECT is_read,starred,note,in_library FROM papers WHERE id='pmid:200'").get() as any;
   assert.equal(preserved.is_read,1);
   assert.equal(preserved.starred,1);
@@ -36,7 +37,8 @@ test('初始化按检索结果重建邮箱范围，归档窗外文献并保留�
   assert.deepEqual(journalFilter(db).threshold,{operator:'gt',value:10});
   db.prepare("UPDATE settings SET value='' WHERE key='min_impact_factor'").run();
   assert.equal(listPapers(db,listSchema.parse({folder:'inbox'})).total,1);
-  assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,2);
+  assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,0);
+  assert.equal(listPapers(db,listSchema.parse({folder:'removed'})).total,2);
   assert.equal(db.prepare("SELECT note FROM papers WHERE id='pmid:200'").get()!.note,'保留的研究笔记');
 
   assert.equal(upsertPaper(db,retained,'medical-ai','2026-11-22T00:00:00.000Z'),true);

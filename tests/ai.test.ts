@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {z} from 'zod';
-import {aiConfig,aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion,jsonCompletion,translateTitle} from '../server/ai.ts';
+import {aiConfig,aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion,jsonCompletion,translateTitle,testAI} from '../server/ai.ts';
 
 test('OpenAI 兼容服务使用 JSON Object，应用端按 schema 校验完整结果',async()=>{
  const original=globalThis.fetch;
@@ -105,5 +105,28 @@ test('Gemini 文本问答保持完整多轮消息，不附带输出 Schema，空
   await assert.rejects(textCompletion('阅读论文',messages,config),/有效回答/);
   globalThis.fetch=async()=>new Response('{}',{status:401});
   await assert.rejects(textCompletion('阅读论文',messages,config),/API Key/);
+ }finally{globalThis.fetch=original;}
+});
+
+
+test('模型自检验证 JSON 与图像，区分失败阶段及额度错误',async()=>{
+ const original=globalThis.fetch;
+ const config={provider:'compatible' as const,base_url:'https://models.example/v1',key:'test',model:'text',figure_model:'vision'};
+ try{
+  const models:string[]=[];
+  globalThis.fetch=async(_url,options)=>{
+   const body=JSON.parse(String(options?.body));
+   assert.equal(body.response_format.type,'json_object');
+   models.push(body.model);
+   if(body.model==='vision')assert.match(body.messages[1].content[1].image_url.url,/^data:image\/png;base64,/);
+   const content=body.model==='vision'?{left:'red',right:'blue'}:{status:'ok'};
+   return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify(content)}}]});
+  };
+  assert.equal((await testAI(config)).image_input,true);
+  assert.deepEqual(models,['text','vision']);
+  globalThis.fetch=async(_url,options)=>JSON.parse(String(options?.body)).model==='vision'
+   ? new Response('{}',{status:429})
+   : Response.json({choices:[{finish_reason:'stop',message:{content:'{"status":"ok"}'}}]});
+  await assert.rejects(testAI(config),/图文模型验证失败.*额度/);
  }finally{globalThis.fetch=original;}
 });

@@ -1,125 +1,207 @@
-"""Run ordered free and institutional sources from the installed paper-download skill."""
-import contextlib, importlib.util, io, json, re, sys
+"""Download and verify public PDF copies for Paper-mail."""
+import hashlib
+import json
+import os
+import re
+import ssl
+import subprocess
+import sys
+from html.parser import HTMLParser
 from pathlib import Path
-from urllib.parse import urlparse, quote
+from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, quote, urlencode, urljoin, urlsplit
+from urllib.request import HTTPSHandler, HTTPRedirectHandler, Request, build_opener
+
+import certifi
+
 from openalex_sources import candidate_urls, matches_doi
 from pdf_identity import verify_pdf
-request=json.loads(sys.stdin.read());target=Path(request['output_dir']);target.mkdir(parents=True,exist_ok=True)
-skill=Path(request['skill']);spec=importlib.util.spec_from_file_location('paper_download_runtime',skill)
-module=importlib.util.module_from_spec(spec);sys.modules[spec.name]=module;spec.loader.exec_module(module)
-attempts=[]
 
-def attempt(name,operation,empty_detail='未发现可直接下载的 PDF'):
-    try:
-        with contextlib.redirect_stdout(io.StringIO()),contextlib.redirect_stderr(io.StringIO()):
-            value=operation()
-            if value:
-                verify_pdf(value.pdf_path,target,request.get('doi') or '',request.get('title') or '')
-        attempts.append({'source':name,'status':'ready' if value else 'not_available','detail':None if value else empty_detail})
-        return value
-    except Exception as exc:
-        detail=re.sub(r'https?://\S+','[来源地址]',str(exc))
-        attempts.append({'source':name,'status':'not_available','detail':detail[:240] or exc.__class__.__name__})
-        return None
+MAX_PDF_BYTES = 50 * 1024 * 1024
+MAX_METADATA_BYTES = 4 * 1024 * 1024
+PUBLIC_HOSTS = (
+    'doi.org', 'ncbi.nlm.nih.gov', 'europepmc.org', 'ebi.ac.uk',
+    'pmc-oa-opendata.s3.amazonaws.com', 'api.openalex.org',
+    'nature.com', 'springer.com', 'springernature.com', 'biomedcentral.com',
+    'bmj.com', 'oup.com', 'oxfordjournals.org', 'plos.org', 'frontiersin.org',
+    'wiley.com', 'sciencedirect.com', 'elsevier.com', 'cell.com', 'thelancet.com',
+    'jamanetwork.com', 'nejm.org', 'science.org', 'pnas.org', 'tandfonline.com',
+    'sagepub.com', 'cambridge.org', 'mdpi.com', 'elifesciences.org',
+)
 
-metadata=module.PaperMetadata(query=request['pmid'],pmid=request['pmid'],pmcid=request.get('pmcid') or None,doi=request.get('doi') or None,title=request.get('title'),pubmed_url='https://pubmed.ncbi.nlm.nih.gov/'+request['pmid']+'/')
-session=module.make_session()
-def prepared_pmc_download():
-    url=request.get('prepared_pdf') or ''
-    parsed=urlparse(url)
-    if parsed.scheme!='https' or parsed.netloc!='pmc-oa-opendata.s3.amazonaws.com':
+
+def public_url(url):
+    parsed = urlsplit(url)
+    host = parsed.hostname or ''
+    return (
+        parsed.scheme == 'https' and not parsed.username and not parsed.password
+        and parsed.port in (None, 443)
+        and any(host == domain or host.endswith('.' + domain) for domain in PUBLIC_HOSTS)
+    )
+
+
+class PublicRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if not public_url(newurl):
+            raise ValueError('重定向目标超出支持的公开全文来源')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def fetch(url, accept, limit):
+    if not public_url(url):
+        raise ValueError('该来源需通过浏览器打开')
+    opener = build_opener(PublicRedirect(), HTTPSHandler(context=ssl.create_default_context(cafile=certifi.where())))
+    request = Request(url, headers={'User-Agent': 'Paper-mail/2.15 (public academic PDF reader)', 'Accept': accept})
+    with opener.open(request, timeout=15) as response:
+        data = response.read(limit + 1)
+        if len(data) > limit:
+            raise ValueError('响应超过文件大小上限')
+        return response.geturl(), data
+
+
+class CitationMetadata(HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.pdf_urls = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'meta':
+            fields = dict(attrs)
+            if str(fields.get('name')).lower() == 'citation_pdf_url' and fields.get('content'):
+                self.pdf_urls.append(fields['content'])
+
+
+def pmc_candidates(pmcid, prepared_pdf):
+    if not re.fullmatch(r'PMC\d+', pmcid):
+        return []
+    candidates = []
+    prepared = urlsplit(prepared_pdf)
+    if (prepared.scheme == 'https' and prepared.netloc == 'pmc-oa-opendata.s3.amazonaws.com'
+            and not prepared.fragment and re.fullmatch(rf'/{pmcid}\.\d+/[^/]+\.pdf', prepared.path)):
+        candidates.append(prepared_pdf)
+    return candidates + [f'https://europepmc.org/articles/{pmcid}?pdf=render',
+                              f'https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/']
+
+
+def europe_pmc_candidates(pmid, pmcid, doi):
+    query = urlencode({'query': f'EXT_ID:{pmid} AND SRC:MED', 'format':'json', 'resultType':'core'})
+    endpoint = 'https://www.ebi.ac.uk/europepmc/webservices/rest/search?' + query
+    _, data = fetch(endpoint, 'application/json', MAX_METADATA_BYTES)
+    records = json.loads(data).get('resultList', {}).get('result', [])
+    record = next((item for item in records if str(item.get('pmid')) == pmid), {})
+    if not record or (doi and record.get('doi') and record['doi'].casefold() != doi.casefold()):
+        return []
+    if pmcid and record.get('pmcid') and record['pmcid'] != pmcid:
+        return []
+    links = record.get('fullTextUrlList', {}).get('fullTextUrl', [])
+    if isinstance(links, dict):
+        links = [links]
+    return [entry['url'] for entry in links
+            if entry.get('url') and entry.get('availabilityCode') in ('OA', 'F')]
+
+
+def openalex_candidates(doi):
+    endpoint = 'https://api.openalex.org/works/https://doi.org/' + quote(doi, safe='/')
+    query = {'select':'doi,locations'}
+    if key := os.environ.get('OPENALEX_API_KEY'):
+        query['api_key'] = key
+    _, data = fetch(endpoint + '?' + urlencode(query), 'application/json', MAX_METADATA_BYTES)
+    work = json.loads(data)
+    return candidate_urls(work, doi) if matches_doi(work, doi) else []
+
+
+def retrieve(url, target, doi, title, seen):
+    if url in seen:
         return None
-    if not parsed.path.startswith('/'+str(metadata.pmcid)+'.'):
-        raise RuntimeError('PMC PDF 与论文标识不符')
-    content=module.request_pdf(session,url)
-    if not content:
-        return None
-    pdf=module.write_pdf(content,target/module.choose_pdf_name(metadata))
-    return module.DownloadResult('pmc-cloud',pdf,url,metadata)
-result=attempt('PMC 官方全文文件',prepared_pmc_download) if request.get('prepared_pdf') else None
-if result is None:
-    if metadata.doi:metadata.publisher_url=module.resolve_doi_landing_page(session,metadata.doi)
-    result=attempt('PubMed / PMC 免费全文',lambda:module.download_via_pubmed(session,metadata,target))
-def europe_pmc_download():
-    response=module.http_get(session,'https://www.ebi.ac.uk/europepmc/webservices/rest/search',params={
-        'query':'EXT_ID:'+request['pmid'],'format':'json','resultType':'core'
-    },timeout=20)
-    records=response.json().get('resultList',{}).get('result',[])
-    record=next((item for item in records if str(item.get('pmid',''))==str(request['pmid'])),None)
-    if record is None:
-        raise RuntimeError('Europe PMC 未返回对应 PMID 记录')
-    if request.get('pmcid') and record.get('pmcid') and record['pmcid'].casefold()!=request['pmcid'].casefold():
-        raise RuntimeError('Europe PMC 返回的 PMCID 与论文记录不一致')
-    if request.get('doi') and record.get('doi') and record['doi'].casefold()!=request['doi'].casefold():
-        raise RuntimeError('Europe PMC 返回的 DOI 与论文记录不一致')
-    if str(record.get('isOpenAccess','')).upper()!='Y':
-        return None
-    links=record.get('fullTextUrlList',{}).get('fullTextUrl',[])
-    if isinstance(links,dict):links=[links]
-    for entry in links:
-        if str(entry.get('availabilityCode','')).upper() not in {'OA','F'}:
-            continue
-        url=entry.get('url')
-        if not url:
-            continue
-        style=str(entry.get('documentStyle','')).lower()
-        candidates=[url] if style=='pdf' or urlparse(url).path.lower().endswith('.pdf') or 'pdf=render' in url.lower() else []
-        try:
-            page=module.http_get(session,url,timeout=module.REQUEST_TIMEOUT)
-            if 'text/html' in page.headers.get('content-type','').lower():
-                candidates.extend(module.extract_pdf_urls_from_html(page.text,url))
-        except Exception:
-            pass
-        for candidate in module.dedupe(candidates):
-            content=module.request_pdf(session,candidate)
-            if content:
-                pdf=module.write_pdf(content,target/module.choose_pdf_name(metadata))
-                return module.DownloadResult('europe-pmc',pdf,candidate,metadata)
-    return None
-if result is None:result=attempt('Europe PMC 开放全文',europe_pmc_download)
-def openalex_download():
-    response=module.http_get(session,'https://api.openalex.org/works/https://doi.org/'+quote(request['doi'],safe='/'),params={
-        'select':'doi,open_access,locations',
-    },timeout=20)
-    work=response.json()
-    if not matches_doi(work,request['doi']):
-        raise RuntimeError('OpenAlex 未返回 DOI 完全匹配的论文')
-    urls=candidate_urls(work,request['doi'])
-    for candidate in urls:
-        content=module.request_pdf(session,candidate)
-        if content:
-            pdf=module.write_pdf(content,target/module.choose_pdf_name(metadata))
-            return module.DownloadResult('openalex-oa',pdf,candidate,metadata)
-        try:
-            page=module.http_get(session,candidate,timeout=module.REQUEST_TIMEOUT)
-            if 'text/html' not in page.headers.get('content-type','').lower():
+    seen.add(url)
+    final_url, data = fetch(url, 'application/pdf,text/html', MAX_PDF_BYTES)
+    if urlsplit(url).hostname == 'pmc-oa-opendata.s3.amazonaws.com':
+        checksums = parse_qs(urlsplit(url).query).get('md5', [])
+        if checksums and checksums != [hashlib.md5(data, usedforsecurity=False).hexdigest()]:
+            raise ValueError('PMC 文件与官方清单的校验值不一致')
+    candidates = [(final_url, data)] if data.startswith(b'%PDF-') else []
+    if not candidates and len(data) <= MAX_METADATA_BYTES:
+        metadata = CitationMetadata()
+        metadata.feed(data.decode('utf-8', errors='replace'))
+        for candidate in dict.fromkeys(urljoin(final_url, link) for link in metadata.pdf_urls):
+            if candidate in seen:
                 continue
-            for pdf_url in module.extract_pdf_urls_from_html(page.text,candidate):
-                content=module.request_pdf(session,pdf_url)
-                if content:
-                    pdf=module.write_pdf(content,target/module.choose_pdf_name(metadata))
-                    return module.DownloadResult('openalex-oa',pdf,pdf_url,metadata)
-        except Exception:
-            continue
-    if urls:
-        raise RuntimeError('找到了开放版本，但其链接当前未返回可下载的 PDF')
+            seen.add(candidate)
+            try:
+                pdf_url, pdf = fetch(candidate, 'application/pdf', MAX_PDF_BYTES)
+                if pdf.startswith(b'%PDF-'):
+                    candidates.append((pdf_url, pdf))
+            except (OSError, ValueError):
+                continue
+    for pdf_url, pdf in candidates:
+        temporary = target / 'download.part'
+        temporary.write_bytes(pdf)
+        try:
+            verified = verify_pdf(temporary, target, doi, title)
+            temporary.replace(target / 'article.pdf')
+            return {'status':'ready', 'file_name':'article.pdf', 'source_url':pdf_url, **verified}
+        finally:
+            temporary.unlink(missing_ok=True)
     return None
-if result is None and metadata.doi:
-    result=attempt('OpenAlex 开放获取版本',openalex_download,empty_detail='OpenAlex 未找到该 DOI 的开放全文 PDF')
-if result is None:result=attempt('出版社页面 PDF',lambda:module.download_via_article_pdf_links(session,metadata,target,source='publisher-article-pdf'))
-if result is None and module.url_looks_like_nature(metadata.publisher_url):result=attempt('Nature 机构访问',lambda:module.download_via_nature_institution(metadata,target,headless=True))
-if result is None and module.url_looks_like_springerlink(metadata.publisher_url):result=attempt('Springer 机构访问',lambda:module.download_via_springer_institution(metadata,target,headless=True))
-if result is not None:
-    try:
-        pdf=result.pdf_path.resolve()
-        verified=verify_pdf(pdf,target,request.get('doi') or '',request.get('title') or '')
-        print(json.dumps({'status':'ready','file_name':pdf.name,'source':result.source,'source_url':result.pdf_url,**verified,'attempts':attempts},ensure_ascii=False))
-    except Exception:
-        print(json.dumps({'status':'error','error':'下载文件未通过 PDF 文件或页面校验。','attempts':attempts},ensure_ascii=False))
-else:
-    note=target/'manual-handoff.json'
-    handoff=json.loads(note.read_text()) if note.exists() else {}
-    url=handoff.get('publisher_url') or metadata.publisher_url or ('https://doi.org/'+metadata.doi if metadata.doi else metadata.pubmed_url)
-    status='needs_browser' if metadata.publisher_url or metadata.pmcid else 'unavailable'
-    error='自动来源未取得有效 PDF，可能需要浏览器验证或机构订阅。' if status=='needs_browser' else '未找到可自动获取的开放全文 PDF。'
-    print(json.dumps({'status':status,'error':error,'handoff_url':url,'attempts':attempts},ensure_ascii=False))
+
+
+def download(request):
+    pmid = str(request['pmid'])
+    if not re.fullmatch(r'\d+', pmid):
+        raise ValueError('PMID 无效')
+    pmcid = request.get('pmcid') or ''
+    doi = request.get('doi') or ''
+    title = request.get('title') or ''
+    target = Path(request['output_dir'])
+    target.mkdir(parents=True, exist_ok=True)
+    prepared_pdf = request.get('prepared_pdf') or ''
+    attempts = []
+    landing = 'https://doi.org/' + quote(doi, safe='/') if doi else 'https://pubmed.ncbi.nlm.nih.gov/' + pmid + '/'
+    sources = [
+        ('PubMed Central', lambda: pmc_candidates(pmcid, prepared_pdf)),
+        ('Europe PMC', lambda: europe_pmc_candidates(pmid, pmcid, doi)),
+    ]
+    if doi:
+        sources.extend([('出版社公开全文', lambda: [landing]), ('OpenAlex', lambda: openalex_candidates(doi))])
+    seen = set()
+    for source, candidates in sources:
+        detail = '没有找到通过身份校验的公开 PDF'
+        try:
+            urls = candidates()
+        except HTTPError as error:
+            detail, urls = f'来源返回 HTTP {error.code}', []
+        except (OSError, ValueError):
+            detail, urls = '获取来源记录时遇到网络或格式错误', []
+        for url in urls:
+            if not url or not public_url(url):
+                continue
+            try:
+                result = retrieve(url, target, doi, title, seen)
+                if result:
+                    attempts.append({'source':source, 'status':'ready', 'detail':None})
+                    return {**result, 'source':source, 'attempts':attempts}
+            except HTTPError as error:
+                detail = f'文件来源返回 HTTP {error.code}'
+            except (URLError, TimeoutError):
+                detail = '公开来源暂时无法连接'
+            except ValueError as error:
+                detail = str(error)
+            except Exception:
+                detail = '文件无法通过 PDF 解析和身份校验'
+        attempts.append({'source':source, 'status':'not_available', 'detail':detail})
+    if skill := request.get('skill'):
+        try:
+            result = subprocess.run(
+                [sys.executable, str(Path(__file__).with_name('download_with_skill.py'))],
+                input=json.dumps(request), text=True, capture_output=True, check=True, timeout=90,
+            )
+            output = json.loads(result.stdout)
+            return {**output, 'attempts':attempts + output.get('attempts', [])}
+        except (OSError, ValueError, subprocess.SubprocessError):
+            attempts.append({'source':'本机机构下载器', 'status':'not_available', 'detail':'请检查本机下载器及其依赖'})
+    return {'status':'needs_browser', 'error':'未取得可直接下载的公开 PDF，可打开原文或上传 PDF。',
+            'handoff_url':landing, 'attempts':attempts}
+
+
+if __name__ == '__main__':
+    print(json.dumps(download(json.load(sys.stdin)), ensure_ascii=False))

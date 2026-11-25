@@ -1,3 +1,4 @@
+import {pythonExecutable} from '../scripts/python-runtime.mjs';
 import {spawn} from 'node:child_process';
 import {createHash,randomUUID} from 'node:crypto';
 import {readFileSync,writeFileSync,mkdirSync,renameSync,unlinkSync,existsSync} from 'node:fs';
@@ -20,7 +21,7 @@ const extractSchema=z.object({ok:z.literal(true),pages:pagesSchema});
 
 function extract(root:string,file:string,paper:any):Promise<DocumentPage[]>{
  return new Promise((resolve,reject)=>{
-  const child=spawn(process.env.PAPER_DOWNLOAD_PYTHON||'/opt/homebrew/bin/python3',[path.join(root,'scripts','read_document.py')],{stdio:['pipe','pipe','pipe']});
+  const child=spawn(pythonExecutable(),[path.join(root,'scripts','read_document.py')],{stdio:['pipe','pipe','pipe']});
   let output='';let expired=false;
   const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},120000);
   child.stdout.on('data',data=>{output+=data;if(output.length>16000000){expired=true;child.kill('SIGKILL');}});

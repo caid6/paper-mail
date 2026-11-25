@@ -1,3 +1,4 @@
+import {pythonExecutable} from '../scripts/python-runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,symlinkSync,readdirSync,unlinkSync} from 'node:fs';
@@ -12,7 +13,7 @@ function fixture(){
  const db=connect(':memory:');upsertPaper(db,paper,'medical-ai');
  db.prepare("INSERT INTO downloads(paper_id,status,created_at) VALUES(?,'needs_browser','now')").run(paper.id);
  const root=mkdtempSync(path.join(tmpdir(),'paper-document-'));symlinkSync(path.resolve('scripts'),path.join(root,'scripts'));
- const bytes=execFileSync('/opt/homebrew/bin/python3',['-c',[
+ const bytes=execFileSync(pythonExecutable(),['-c',[
   'import sys, io','from pypdf import PdfWriter',
   'from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject',
   'writer=PdfWriter()','page=writer.add_blank_page(width=600,height=800)',

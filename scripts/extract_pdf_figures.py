@@ -4,7 +4,7 @@ import re
 import sys
 from pathlib import Path
 
-import fitz
+import pymupdf as fitz
 
 fitz.TOOLS.mupdf_display_errors(False)
 fitz.TOOLS.mupdf_display_warnings(False)

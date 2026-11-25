@@ -1,3 +1,4 @@
+import {pythonExecutable} from '../scripts/python-runtime.mjs';
 import {load} from 'cheerio';
 import {spawn} from 'node:child_process';
 import {mkdirSync,writeFileSync,readFileSync,mkdtempSync,rmSync} from 'node:fs';
@@ -211,7 +212,7 @@ const pdfFigureSchema=z.object({
 function extractPDFFigures(root:string,file:string):Promise<{figures:z.infer<typeof pdfFigureSchema>[];outputDir:string}>{
  return new Promise((resolve,reject)=>{
   const outputDir=mkdtempSync(path.join(tmpdir(),'paper-mail-figures-'));
-  const child=spawn(process.env.PAPER_DOWNLOAD_PYTHON||'/opt/homebrew/bin/python3',[path.join(root,'scripts','extract_pdf_figures.py')],{stdio:['pipe','pipe','pipe']});
+  const child=spawn(pythonExecutable(),[path.join(root,'scripts','extract_pdf_figures.py')],{stdio:['pipe','pipe','pipe']});
   let output='';let expired=false;
   const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},120000);
   child.stdout.on('data',data=>{output+=data;if(output.length>2000000){expired=true;child.kill('SIGKILL');}});

@@ -1,5 +1,7 @@
 import { DOMParser, type Element } from '@xmldom/xmldom';
 import { XMLValidator } from 'fast-xml-parser';
+import { EnvHttpProxyAgent } from 'undici';
+import { setTimeout as delay } from 'node:timers/promises';
 import type {PaperInput} from './core.ts';
 import {eligibleJournalIssns} from './journals.ts';
 import type {ImpactOperator} from '../shared/impact.ts';
@@ -50,16 +52,41 @@ export function parsePubmed(xml:string):PaperInput[]{
 }
 let lastRequest=0;
 let ncbiSlots=Promise.resolve();
-export async function ncbi(endpoint:string,params:Record<string,string>){
- const slot=ncbiSlots.then(async()=>{const delay=Math.max(0,400-(Date.now()-lastRequest));if(delay)await new Promise(r=>setTimeout(r,delay));lastRequest=Date.now();});
+const ncbiConnection=new EnvHttpProxyAgent({connectTimeout:40000,autoSelectFamily:true});
+const retryableStatus=new Set([429,500,502,503,504]);
+const retryableNetwork=new Set(['EAI_AGAIN','ENETUNREACH','EHOSTUNREACH','ETIMEDOUT','ECONNREFUSED','ECONNRESET','UND_ERR_CONNECT_TIMEOUT','UND_ERR_SOCKET','TimeoutError']);
+async function ncbiSlot(){
+ const slot=ncbiSlots.then(async()=>{await delay(Math.max(0,400-(Date.now()-lastRequest)));lastRequest=Date.now();});
  ncbiSlots=slot.catch(()=>{});
  await slot;
+}
+export async function ncbi(endpoint:string,params:Record<string,string>){
  const url=new URL('https://eutils.ncbi.nlm.nih.gov/entrez/eutils/'+endpoint);
  const encoded=new URLSearchParams({...params,tool:'PaperMorning'}).toString();
- const options:RequestInit={signal:AbortSignal.timeout(60000),headers:{'User-Agent':'PaperMorning/2.0 (local personal PubMed reader)'}};
+ const options:RequestInit & {dispatcher:typeof ncbiConnection}={dispatcher:ncbiConnection,headers:{'User-Agent':'PaperMorning/2.0 (local personal PubMed reader)'}};
  if(endpoint==='esearch.fcgi'){options.method='POST';options.body=encoded;options.headers={...options.headers,'Content-Type':'application/x-www-form-urlencoded'};}else url.search=encoded;
- let res:Response;try{res=await fetch(url,options);}catch(e:any){throw new Error('PubMed 请求未连接成功：'+(e.cause?.code||e.name||'网络错误'));}
- if(!res.ok)throw new Error(`PubMed 请求失败（HTTP ${res.status}）`);return res;
+ for(let attempt=0;;attempt++){
+  await ncbiSlot();
+  let response:Response;
+  try{response=await fetch(url,{...options,signal:AbortSignal.timeout(55000)});}
+  catch(error){
+   const failure=error as Error & {cause?:{code?:string}};
+   const code=failure.cause?.code||failure.name;
+   if(attempt===0&&retryableNetwork.has(code)){await delay(750);continue;}
+   const hint=code==='EAI_AGAIN'||code==='ENOTFOUND'?'DNS 无法解析 NCBI 域名':
+    code==='UND_ERR_CONNECT_TIMEOUT'||code==='ETIMEDOUT'||code==='TimeoutError'?'连接或等待 NCBI 响应超时，请检查网络和代理':
+    '访问 NCBI 出现网络错误，请检查网络和代理';
+   throw new Error(`PubMed：${hint}（${code}）`);
+  }
+  if(response.ok)return response;
+  await response.body?.cancel();
+  if(attempt===0&&retryableStatus.has(response.status)){
+   const after=response.headers.get('retry-after');
+   const wait=after===null?750:/^\d+$/.test(after)?Number(after)*1000:Date.parse(after)-Date.now();
+   if(Number.isFinite(wait)&&wait<=15000){await delay(Math.max(750,wait));continue;}
+  }
+  throw new Error(`PubMed 请求失败（HTTP ${response.status}）${response.status===429?'，NCBI 请求过多，请稍后重试':''}`);
+ }
 }
 export async function fetchPubmedRecords(ids:string[]){return parsePubmed(await (await ncbi('efetch.fcgi',{db:'pubmed',id:ids.join(','),retmode:'xml'})).text());}
 export function validateSearchErrors(data:any,allowedMissingJournalIssns:string[]=[]){

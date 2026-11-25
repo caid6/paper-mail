@@ -7,7 +7,7 @@ export {pubmedDefaults as defaults} from './pubmed.ts';
 import {pubmedDefaults as defaults} from './pubmed.ts';
 export type Subscription = {id:string;name:string;color:string;query:string;enabled:number;description:string;query_explanation:string};
 export type PaperInput = {id:string;title:string;abstract:string;authors:string[];published:string;updated:string;categories:string[];url:string;pdf_url:string;source?:string;journal?:string;publication_date?:string;indexed_at?:string;doi?:string;pmcid?:string;pub_types?:string[];full_text_url?:string;journal_issns?:string[]};
-export type Paper = PaperInput & {title_zh:string|null;title_status:string;title_error:string|null;received_at:string;is_read:number;starred:number;archived:number;note:string;digest_status:string;digest_error:string|null;digest:Digest|null;subscriptions:Subscription[];quality_reviews:any[]};
+export type Paper = PaperInput & {title_zh:string|null;title_status:string;title_error:string|null;received_at:string;is_read:number;starred:number;archived:number;archive_origin:'manual'|'quality'|'legacy'|null;in_library:number;note:string;digest_status:string;digest_error:string|null;digest:Digest|null;subscriptions:Subscription[];quality_reviews:any[]};
 export const digestSchema=z.object({
   title_zh:z.string().min(1), one_liner:z.string().min(1), summary:z.string().min(1),
   problem:z.string().min(1), method:z.string().min(1), findings:z.array(z.string().min(1)).min(1).max(6),
@@ -33,6 +33,12 @@ export function connect(path:string) {
       SELECT ps.paper_id,ps.subscription_id,'pending' FROM paper_subscriptions ps;`);
   const columns=new Set(db.prepare('PRAGMA table_info(papers)').all().map(c=>String(c.name)));
   if(!columns.has('in_library'))db.exec('ALTER TABLE papers ADD COLUMN in_library INTEGER NOT NULL DEFAULT 1');
+  if(!columns.has('archive_origin')){
+    db.exec(`BEGIN IMMEDIATE;
+      ALTER TABLE papers ADD COLUMN archive_origin TEXT CHECK (archive_origin IN ('manual','quality','legacy'));
+      UPDATE papers SET archive_origin='legacy' WHERE archived=1;
+      COMMIT;`);
+  }
   for(const [name,def] of Object.entries({source:"TEXT NOT NULL DEFAULT 'arxiv'",journal:"TEXT NOT NULL DEFAULT ''",publication_date:"TEXT NOT NULL DEFAULT ''",indexed_at:"TEXT NOT NULL DEFAULT ''",doi:"TEXT NOT NULL DEFAULT ''",pmcid:"TEXT NOT NULL DEFAULT ''",pub_types:"TEXT NOT NULL DEFAULT '[]'",full_text_url:"TEXT NOT NULL DEFAULT ''"}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
   for(const [name,def] of Object.entries({journal_issns:"TEXT NOT NULL DEFAULT '[]'",journal_id:"TEXT NOT NULL DEFAULT ''",jif_label:"TEXT NOT NULL DEFAULT ''",jif_status:"TEXT NOT NULL DEFAULT ''",impact_factor:'REAL',cas_zone:'INTEGER',metric_match:"TEXT NOT NULL DEFAULT 'unmatched'",metric_journal:"TEXT NOT NULL DEFAULT ''",metric_source:"TEXT NOT NULL DEFAULT ''",metric_year:'INTEGER',metric_edition:'INTEGER'}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
   for(const [name,def] of Object.entries({title_zh:'TEXT',title_status:"TEXT NOT NULL DEFAULT 'pending'",title_error:'TEXT'}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
@@ -44,6 +50,10 @@ export function connect(path:string) {
     if(!downloadColumns.has(name))db.exec(`ALTER TABLE downloads ADD COLUMN ${name} ${definition}`);
   }
   db.exec("UPDATE downloads SET status='pending' WHERE status='running'");
+  db.prepare("UPDATE downloads SET status='pending',error=NULL,completed_at=NULL WHERE status='unavailable' AND error IN (?,?)").run(
+    '本机自动下载器不可用，请上传原文 PDF',
+    'PDF 环境未就绪。请在项目目录运行 npm run setup:python，再重启 Paper-mail。'
+  );
   db.exec(`CREATE TABLE IF NOT EXISTS pdf_documents(
     paper_id TEXT PRIMARY KEY REFERENCES papers(id) ON DELETE CASCADE,
     sha256 TEXT NOT NULL,file_name TEXT NOT NULL,page_count INTEGER NOT NULL,pages TEXT NOT NULL,created_at TEXT NOT NULL);

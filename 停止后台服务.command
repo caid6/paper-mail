@@ -1,5 +1,6 @@
 #!/bin/zsh
 set -e
 cd "$(dirname "$0")"
+export PATH="$PWD/.runtime/node/bin:/usr/local/bin:/opt/homebrew/bin:$PATH"
 node scripts/service.mjs stop
-print '后台服务已停止。再次双击“启动知更.command”可恢复。'
+print '再次双击“启动Paper-mail.command”即可恢复。'

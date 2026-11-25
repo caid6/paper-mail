@@ -1,3 +1,4 @@
+import {pythonExecutable} from '../scripts/python-runtime.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
@@ -126,7 +127,7 @@ test('出版社只开放部分主图时，用 PDF 按图注补齐缺失编号并
   assert.equal(db.prepare('SELECT status FROM publisher_figure_indexes WHERE paper_id=?').get(id)!.status,'partial');
   mkdirSync(path.join(root,'data','downloads',id.replace('pmid:','')),{recursive:true});
   const pdf=path.join(root,'data','downloads',id.replace('pmid:',''),'paper.pdf');
-  execFileSync('/opt/homebrew/bin/python3',['-c',`import fitz
+  execFileSync(pythonExecutable(),['-c',`import pymupdf as fitz
 d=fitz.open();p=d.new_page(width=600,height=800);p.draw_rect(fitz.Rect(60,80,540,360));p.insert_text((60,440),'Figure 1: Study design.',fontsize=12);p.draw_rect(fitz.Rect(60,490,540,650));p.insert_text((60,720),'Figure 2 - Main results.',fontsize=12);d.save(r'${pdf}');d.close()`]);
   await indexPDFFigures(db,root,id,pdf);
   assert.deepEqual((db.prepare('SELECT origin,label FROM figures WHERE paper_id=? ORDER BY position,label').all(id) as any[]).map(row=>[row.origin,row.label]),[['publisher','Figure 1'],['pdf','Figure 2']]);
@@ -162,7 +163,7 @@ test('无需打开页面，后台自动完成 PDF 下载、全部页解析、主
  try{
   mkdirSync(path.join(root,'scripts'));
   for(const name of ['read_document.py','pdf_identity.py','extract_pdf_figures.py'])symlinkSync(path.resolve('scripts',name),path.join(root,'scripts',name));
-  execFileSync('/opt/homebrew/bin/python3',['-c',`import fitz
+  execFileSync(pythonExecutable(),['-c',`import pymupdf as fitz
 from pathlib import Path
 d=fitz.open();p=d.new_page(width=600,height=800);p.insert_text((70,70),'Clinical foundation models',fontsize=16);p.draw_rect(fitz.Rect(80,150,520,410),color=(0.1,0.2,0.8),width=3);p.insert_text((80,455),'Figure 1. Study design and external validation.',fontsize=12);d.set_metadata({'title':'Clinical foundation models'});d.save(str(Path(r'${root}')/'source.pdf'));d.close()`]);
   writeFileSync(path.join(root,'scripts','download_bridge.py'),`import json,sys,shutil
