@@ -13,4 +13,7 @@ test('文献日期保留跨年辨识和原始精度',()=>{
 test('服务端时间戳按北京时间展示，跨日跨年正确',()=>{
   assert.equal(formatDate('2025-12-31T18:10:00.000Z'),'2026-01-01');
   assert.equal(formatDate('2026-11-18T00:00:00+08:00'),'2026-11-18');
+  assert.equal(formatDate('2026-11-24T03:35:10.943Z','America/New_York'),'2026-11-23');
+  assert.equal(formatDate('2026-11-23','America/New_York'),'2026-11-23');
+  assert.equal(formatDate(''),'未提供');
 });

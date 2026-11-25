@@ -502,7 +502,6 @@ svg {
   border: 0;
   background: none;
   cursor: pointer;
-  max-width: 87px;
   font-size: 11px;
   color: #748197;
 }
@@ -2911,7 +2910,6 @@ svg {
     padding: 6px 10px;
   }
   .sort-select {
-    max-width: 85px;
     font-size: 11px;
     color: #748197;
   }
