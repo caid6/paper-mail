@@ -88,7 +88,7 @@ export default function PaperReading({paper,state,currentModel,onClose}:{paper:P
     else if(!e.shiftKey&&document.activeElement===nodes.at(-1)){e.preventDefault();nodes[0]?.focus();}
    }
   }}>
-  <header className="study-header"><FileText size={20}/><div><span>全文阅读</span><h2 id="study-title">{paper.digest?.title_zh||paper.title}</h2></div><button className="icon-button" aria-label="关闭全文阅读" onClick={onClose}><X size={22}/></button></header>
+  <header className="study-header"><FileText size={20}/><div><span>全文阅读</span><h2 id="study-title">{paper.title_zh||paper.digest?.title_zh||paper.title}</h2></div><button className="icon-button" aria-label="关闭全文阅读" onClick={onClose}><X size={22}/></button></header>
   <nav className="study-mobile-tabs"><button className={mobileTab==='pdf'?'active':''} onClick={()=>setMobileTab('pdf')}>PDF 原文</button><button className={mobileTab==='chat'?'active':''} onClick={()=>setMobileTab('chat')}>AI 问答</button></nav>
   <div className="study-layout">
    <section className="study-pdf" aria-label="PDF 原文">

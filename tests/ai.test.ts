@@ -1,6 +1,40 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {aiConfig,aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion} from '../server/ai.ts';
+import {z} from 'zod';
+import {aiConfig,aiInputSchema,aiServiceSchema,resolveAI,listModels,textCompletion,jsonCompletion,translateTitle} from '../server/ai.ts';
+
+test('OpenAI 兼容服务使用 JSON Object，应用端按 schema 校验完整结果',async()=>{
+ const original=globalThis.fetch;
+ const config={provider:'compatible' as const,base_url:'https://models.example/v1',key:'test',model:'text',figure_model:'vision'};
+ try{
+  globalThis.fetch=async(url,options)=>{
+   assert.equal(url,'https://models.example/v1/chat/completions');
+   const body=JSON.parse(String(options?.body));
+   assert.deepEqual(body.response_format,{type:'json_object'});
+   assert.match(body.messages[0].content,/符合以下 JSON Schema/);
+   return Response.json({choices:[{finish_reason:'stop',message:{content:'{"title":"研究题目"}'}}]});
+  };
+  assert.deepEqual(await jsonCompletion(z.object({title:z.string().min(1)}),'中文提示',{title:'test'},{config}),{title:'研究题目'});
+  globalThis.fetch=async()=>Response.json({choices:[{finish_reason:'stop',message:{content:'{"title":""}'}}]});
+  await assert.rejects(jsonCompletion(z.object({title:z.string().min(1)}),'中文提示',{title:'test'},{config}),/结构不完整/);
+ }finally{globalThis.fetch=original;}
+});
+
+test('单独翻译没有作者摘要的 PubMed 题名并保留医学缩写',async()=>{
+ const original=globalThis.fetch;
+ try{
+  const config={provider:'compatible' as const,base_url:'https://models.example/v1',key:'test',model:'text',figure_model:'vision'};
+  let body:any;
+  globalThis.fetch=async(_url,options)=>{
+   body=JSON.parse(String(options?.body));
+   return Response.json({choices:[{finish_reason:'stop',message:{content:'{"title_zh":"用于 ECG 分析的医学基础模型"}'}}]});
+  };
+  assert.deepEqual(await translateTitle('A medical foundation model for ECG analysis',config),{title_zh:'用于 ECG 分析的医学基础模型'});
+  assert.equal(body.max_tokens,1200);
+  assert.equal(body.response_format.type,'json_object');
+  assert.match(body.messages[1].content,/foundation model/i);
+ }finally{globalThis.fetch=original;}
+});
 
 test('发布版没有预填模型，未完成本机配置时不向模型服务发请求',async()=>{
  const keys=['AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL','AI_API_KEY','GEMINI_API_KEY','GEMINI_MODEL'];

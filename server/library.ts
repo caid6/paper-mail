@@ -1,7 +1,7 @@
 import {z} from 'zod';
 import {type DB,type PaperInput,hydrate,upsertPaperRecord} from './core.ts';
 import {journalWhere} from './journals.ts';
-export const listSchema=z.object({folder:z.string().default('inbox'),q:z.string().max(500).default(''),filter:z.enum(['all','unread','read','ready']).default('all'),sort:z.enum(['published','received_at']).default('received_at'),page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(5).max(50).default(15)});
+export const listSchema=z.object({folder:z.string().default('inbox'),q:z.string().max(500).default(''),filter:z.enum(['all','unread','read','ready']).default('all'),sort:z.enum(['published','received_at']).default('published'),page:z.coerce.number().int().min(1).default(1),page_size:z.coerce.number().int().min(5).max(50).default(50)});
 export type ListOptions=z.infer<typeof listSchema>;
 export function listPapers(db:DB,opts:ListOptions){
  const where:string[]=[journalWhere(db)];const args:(string|number)[]=[];
@@ -14,11 +14,11 @@ export function listPapers(db:DB,opts:ListOptions){
  if(opts.filter==='unread')where.push('p.is_read=0');
  if(opts.filter==='read')where.push('p.is_read=1');
  if(opts.filter==='ready')where.push("p.digest_status='ready'");
- if(opts.q){const pattern='%'+opts.q.replace(/[\\%_]/g,'\\$&')+'%';where.push("(p.title LIKE ? ESCAPE '\\' OR p.authors LIKE ? ESCAPE '\\' OR p.journal LIKE ? ESCAPE '\\' OR p.abstract LIKE ? ESCAPE '\\' OR p.id LIKE ? ESCAPE '\\' OR json_extract(p.digest,'$.title_zh') LIKE ? ESCAPE '\\')");for(let i=0;i<6;i++)args.push(pattern);}
+ if(opts.q){const pattern='%'+opts.q.replace(/[\\%_]/g,'\\$&')+'%';where.push("(p.title LIKE ? ESCAPE '\\' OR p.title_zh LIKE ? ESCAPE '\\' OR p.authors LIKE ? ESCAPE '\\' OR p.journal LIKE ? ESCAPE '\\' OR p.abstract LIKE ? ESCAPE '\\' OR p.id LIKE ? ESCAPE '\\' OR json_extract(p.digest,'$.title_zh') LIKE ? ESCAPE '\\')");for(let i=0;i<7;i++)args.push(pattern);}
  const sqlWhere=where.join(' AND ');
  const total=Number(db.prepare(`SELECT COUNT(*) AS n FROM papers p WHERE ${sqlWhere}`).get(...args)!.n);
  const pages=Math.max(1,Math.ceil(total/opts.page_size)),page=Math.min(opts.page,pages);
- const rows=db.prepare(`SELECT p.id,p.title,json_extract(p.digest,'$.title_zh') AS title_zh,p.journal,p.publication_date,p.published,p.received_at,p.is_read,p.starred,(p.archived=1 OR p.in_library=0) AS archived,p.digest_status,p.source,p.pmcid,p.impact_factor,p.jif_label,p.jif_status,p.cas_zone,p.metric_year,p.metric_edition,p.metric_match FROM papers p WHERE ${sqlWhere} ORDER BY p.${opts.sort} DESC,p.id DESC LIMIT ? OFFSET ?`).all(...args,opts.page_size,(page-1)*opts.page_size);
+ const rows=db.prepare(`SELECT p.id,p.title,p.title_zh,p.title_status,p.journal,p.publication_date,p.published,p.received_at,p.is_read,p.starred,(p.archived=1 OR p.in_library=0) AS archived,p.digest_status,p.source,p.pmcid,p.impact_factor,p.jif_label,p.jif_status,p.cas_zone,p.metric_year,p.metric_edition,p.metric_match FROM papers p WHERE ${sqlWhere} ORDER BY p.${opts.sort} DESC,p.id DESC LIMIT ? OFFSET ?`).all(...args,opts.page_size,(page-1)*opts.page_size);
  const items=rows.map(row=>({...row,id:String(row.id),subscriptions:db.prepare('SELECT s.id,s.name,s.color FROM subscriptions s JOIN paper_subscriptions ps ON ps.subscription_id=s.id WHERE ps.paper_id=? ORDER BY s.rowid').all(row.id as string)}));
  return {items,total,page,page_size:opts.page_size,pages};
 }

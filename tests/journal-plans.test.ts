@@ -28,7 +28,7 @@ test('a downloaded publisher PDF without PMCID has a distinct figure status',()=
   upsertPaper(db,{id:'pmid:1',title:'Clinical study',journal:'Nature Medicine',abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/1/',pdf_url:''},'medical-ai');
   db.prepare("INSERT INTO downloads(paper_id,status,source,created_at) VALUES('pmid:1','ready','publisher-article-pdf','now')").run();
   const state=figureState(db,'pmid:1');
-  assert.equal(state.status,'no_pmc');
+  assert.equal(state.status,'pdf_pending');
   assert.equal(state.pdf_available,true);
   assert.deepEqual(state.figures,[]);
  }finally{db.close();}

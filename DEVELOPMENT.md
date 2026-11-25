@@ -4,7 +4,7 @@
 
 ## 1. 项目目标
 
-Paper-mail 是一个运行在本机的医学人工智能文献收件箱：从 PubMed 按研究方向收取文献，用用户配置的模型生成中文导读，提供原文摘要、全文链接、PDF 自动获取与手工上传、站内 PDF 阅读和全文 AI 问答、PMC 主图解读、阅读状态、收藏、归档、笔记和方向标签。
+Paper-mail 是一个运行在本机的医学人工智能文献收件箱：从 PubMed 按研究方向收取文献，用用户配置的模型生成中文题名和导读，提供原文摘要、全文链接、PDF 自动获取与手工上传、站内 PDF 阅读和全文 AI 问答，以及从 PMC、出版社公开页面或 PDF 获取的主图解读、阅读状态、收藏、归档、笔记和方向标签。
 
 产品主流程是：
 
@@ -17,10 +17,11 @@ Paper-mail 是一个运行在本机的医学人工智能文献收件箱：从 Pu
 
 ## 2. 当前版本与运行状态
 
-- 源码版本：`2.14.3`
+- 源码版本：`2.14.6`
 - 运行地址：<http://127.0.0.1:4317>
 - 技术栈：React 19 + TypeScript + Vite；Node.js + Express 5；Node 内置 SQLite。
-- 当前全文准备：初始化、手动及每日收信完成后由本机服务自动派发；无需打开浏览器。PDF 下载、全页文本解析、PMC 正文获取与主图解读分别排队。升级时也会派发当前邮箱未准备的文献。
+- 当前全文准备：初始化、手动及每日收信完成后由本机服务自动派发；无需打开浏览器。PDF 下载、全页文本解析、PMC 正文、Nature 公开文章图表和 PDF 主图解读分别排队，不同全文来源独立推进。升级时也会派发当前邮箱未准备或此前失败的文献。
+- 当前中文题名：单独保存并排队翻译，不依赖 PubMed 是否提供摘要；已完成的中文导读会迁移其中的中文题名。失败时在阅读页显示状态与重试入口。
 - 当前阅读交互：PDF 连续滚动；普通全文问答，Enter 发送、Shift+Enter 换行。
 - 模型服务由每位用户在本机配置。服务地址、模型和密钥从本机 `.env` 或进程环境读取。
 - 每日收取的默认时间为北京时间 `07:30`，每个方向默认检查 `10` 篇；用户可以在设置中修改。
@@ -65,7 +66,7 @@ server/
   reading-scope.ts         当前邮箱、影响因子与未完成质控的统一派发条件
   reading-preparation.ts   幂等入队、后台启动与剩余准备篇数
   pmc.ts                   官方 E-utilities/JATS/云端清单、版本与身份核验
-  figures.ts               PMC 全文、主图缓存和视觉解读队列
+  figures.ts               PMC、Nature 与 PDF 主图缓存和视觉解读队列
   downloads.ts             paper-download PDF 获取队列
   documents.ts             PDF 上传、逐页文本存储、整篇全文和历史对话直接调用 API
 
@@ -76,6 +77,7 @@ scripts/quality_audit.mjs  使用配置的模型对论文方向命中关系做�
 scripts/openalex_sources.py  按 DOI 与 OA 标记筛选 OpenAlex 全文链接
 scripts/pdf_identity.py     检查 PDF 文件和 DOI/完整标题证据
 scripts/read_document.py    验证 PDF 身份并提取所有页面的文字
+scripts/extract_pdf_figures.py  按明确的主文图注提取 PDF 页图像
 启动Paper-mail.command      安装/启动本机后台服务并打开网页
 停止后台服务.command        停止服务并取消登录启动
 ```
@@ -85,7 +87,7 @@ scripts/read_document.py    验证 PDF 身份并提取所有页面的文字
 首次或源码更新后：
 
 ```sh
-cd /Users/cai/Documents/Codex/2026-11-18/new-chat/outputs/paper-morning
+cd /path/to/paper-mail
 npm ci
 npm run build
 ./启动Paper-mail.command
@@ -131,11 +133,12 @@ npm run dev
 
 - `settings`：每日时间、时区、每方向数量、影响因子、初始化状态和范围等。
 - `subscriptions`：研究方向和 PubMed 检索式。
-- `papers`：论文、摘要、日期、阅读状态、收藏、归档、笔记、导读和指标；`in_library` 标记是否属于当前初始化范围。
+- `papers`：论文、中英文题名、摘要、日期、阅读状态、收藏、归档、笔记、导读和指标；中文题名有独立状态字段，`in_library` 标记是否属于当前初始化范围。
 - `paper_subscriptions`：论文与多个研究方向的关联。
 - `relevance_reviews`：逐论文、逐方向的相关性复核状态、判定、理由和原文证据。
 - `sync_runs`：手动、每日和初始化任务记录。
-- `fulltexts`、`figures`：PMC 全文和主图解读状态。
+- `fulltexts`、`figures`：PMC 全文、PMC/Nature/PDF 主图与解读状态。
+- `pdf_figure_indexes`、`publisher_figure_indexes`：按 PDF SHA-256 与论文 DOI 保存图表识别状态。
 - `downloads`：PDF 获取状态和逐来源尝试结果；上传文件使用 `source=manual-upload`。新增 `automatic` 区分当前邮箱后台任务与显式 API 请求，`index_error` 持久记录 PDF 解析失败；`fulltexts.automatic` 同样参与后台派发条件。
 - `pdf_documents`：PDF 文件名、SHA-256 指纹、页数和全部逐页提取文本。
 - `paper_chats`：按论文与 PDF 指纹保存问题、模型答案、模型名和时间。
@@ -152,7 +155,7 @@ PubMed 收录日期适合发现最近进入 PubMed 的新记录，因为正式�
 
 最近一次每日任务由 `/api/state.dailyRun` 提供；`recentDailyRuns` 返回近 7 次每日任务，设置 → 每日推送 → 最近收信记录可展开查看时间、状态和新入库篇数。入库数包含后续质控可能归档的记录。
 
-首页默认以本机实际 `received_at` 排序并显示“收信日期”，可切换“PubMed 收录”查看源记录日期；研究方向右侧数字显示该方向当前总篇数，鼠标提示同时给出未读数。原来的数字是未读数，容易被误解为总量。
+首页默认按 PubMed 收录日期倒序显示，每页 50 篇；可切换“最新收信时间”排序，也可选择 15、25 或 50 篇。研究方向右侧数字显示该方向当前总篇数，鼠标提示同时给出未读数。原来的数字是未读数，容易被误解为总量。
 
 最近一次每日任务由 `/api/state.dailyRun` 提供，侧栏显示当天待收、进行中、成功新增篇数或失败状态；任务在当天完成时显示一次提示。这样刷新页面后仍可确认任务结果。新安装默认每方向检查 10 篇；升级时将旧默认值 8 更新为 10，其他已设置数量不变。
 
@@ -243,7 +246,7 @@ AI 解析所选系列、JCR 学科或明确刊名、排除项及明确给出的�
 
 ## 9. AI 与后台队列
 
-中文导读只把标题、作者、PubMed 摘要和元数据发送给用户选择的模型，使用 JSON Schema 校验返回结构。图文解读会把真实主图、图注和正文引用段落发送给图像模型。
+中文题名使用单独翻译队列，只发送标题；摘要导读把标题、作者、PubMed 摘要和元数据发送给用户选择的模型。两者均使用 JSON Object 返回并由服务端校验结构。图文解读会把真实主图、图注和正文引用段落发送给图像模型。
 
 导读最多两个并发 worker。论文保存时记录 `digest_model` 和 `digest_at`；模型配置变化不会伪造旧导读来源，阅读页会显示历史模型并提供“用当前模型重新解读”。模型请求失败保留旧导读并记录 `digest_error`。
 
@@ -257,15 +260,19 @@ PDF 队列优先使用已核验的 PMC 官方云端 PDF，之后依次尝试 Pub
 
 JATS graphic 的文件名必须与 media_urls 完全匹配，不按扩展名或相似度猜图像。云端 URI 仅允许指定 bucket 和本篇版本目录。主图按真实 PNG/JPEG/GIF/WebP 文件签名判别类型，兼容 S3 的 binary/octet-stream；清单带 MD5 时核验内容一致性，缓存到本地后才显示。视觉调用使用实际图像、图注和引用段落，保存所选 figure_model，单图 maxOutputTokens=20000。无公开云端文件或图像不完整时记录 unavailable，正文主图不会由摘要或 PDF 页面猜造。旧 HTML 解析器保留在测试中，自动任务不再抓取 PMC 网页；已完成旧记录继续使用。图片许可原文保留，界面折叠展示。
 
+### Nature 与 PDF 主图
+
+收信准备队列先按论文 DOI 读取 Nature Portfolio 的公开文章页，只接受与 PubMed DOI 一致的页面和 `media.springernature.com` 图片；解析编号正文图和作者图注，排除补充图。PDF 解析需 Python `requirements.txt` 中的 PyMuPDF，逐行识别 Figure/Fig. 编号作者图注，确保图注可从 PDF 文本层校验；向视觉模型发送原始整页，保留完整的多子图布局，不猜裁切边界。出版社公开图像可用时优先采用，未取得的图号由 PDF 图页补齐。PDF SHA-256 保存在 `pdf_figure_indexes`，Nature DOI 状态保存在 `publisher_figure_indexes`。所有图像使用本机配置的视觉模型解读，PMC 若有结构化主图优先展示。
+
 ### 站内阅读与问答
 
-`prepareReading` 在初始化事务提交、手动/每日收信结束、相关性质控任务结束、方向保存、筛选设置/API 变更、归档恢复与服务启动时运行。先按 `readingScope` 为当前非归档、库内、符合 IF 的 PubMed 文献幂等入队；启用质控且已有 API key 时跳过仍有 pending/running 方向复核的记录。复核网络失败保持文献在邮箱，失败项不会被当作无关归档。关闭质控时允许按检索结果准备。多方向共用每 PMID 的一份 PDF、解析和主图。
+`prepareReading` 在初始化事务提交、手动/每日收信结束、相关性质控任务结束、方向保存、筛选设置/API 变更、归档恢复与服务启动时运行。先按 `readingScope` 为当前非归档、库内、符合 IF 的 PubMed 文献幂等入队；启用质控且模型已完整配置时跳过仍有 pending/running 方向复核的记录。复核网络失败保持文献在邮箱，失败项不会被当作无关归档。关闭质控时允许按检索结果准备。多方向共用每 PMID 的一份 PDF、解析和主图。
 
-`downloads`、`fulltexts` 保存队列状态。单篇下载、PDF 全页解析、PMC 获取和逐图解读分别串行运行，可以相互并行。PMC 文献先获取官方清单，再优先使用明确的云端 PDF；其他论文继续既有下载链路。下载成功立即派发全页解析。主图即使未配置模型也先缓存，配置模型后恢复视觉解读。服务启动时 running 下载、loading 全文和 generating 图像恢复 pending；已完成和终态失败不因打开页面或再次收信而重试。PDF 解析错误保存在数据库，缺失文件标明 interrupted；移出当前范围的待处理自动任务不派发，恢复入库后继续。已在执行的单篇请求允许结束，结果保留。
+`downloads`、`fulltexts` 保存队列状态。单篇下载、PDF 全页解析、PMC 获取和逐图解读分别运行。PMC 文献先获取官方清单，再优先使用明确的云端 PDF；其他论文继续既有下载链路。下载成功立即派发全页解析。出版社页面只提供部分图片时，PDF 主文按图号补齐缺失的图，不重复展示同一图号。主图即使未配置模型也先缓存，配置模型后恢复视觉解读。服务启动时 running 下载、loading 全文和 generating 图像恢复 pending；版本升级会重新识别此前失败或新版规则可处理的图片。PDF 解析错误保存在数据库，缺失文件标明 interrupted；移出当前范围的待处理自动任务不派发，恢复入库后继续。已在执行的单篇请求允许结束，结果保留。
 
-`DownloadPaper` 和 `Figures` 只 GET 状态与已缓存文件，不 POST 启动全文获取；`document/ensure` 作为显式 API 保留。自动失败的 `needs_browser/unavailable/error/interrupted` 显示上传入口，成功显示阅读与下载。首页原有底部状态显示 `readingPreparation.pending` 篇全文或主图正在准备，不增加操作按钮。阅读器按需加载 `pdfjs-dist@5.4.624` 与本地 worker，无外部 CDN；全部页面按实际尺寸连续排列，每页 Canvas + TextLayer 支持缩放和选中文字；IntersectionObserver 按阅读视口渲染附近页面像素，远离视口的 Canvas 释放内存，所有页面占位尺寸保持稳定，桌面左右阅读/问答，手机切换；关闭返回原邮箱阅读区。
+`DownloadPaper` 和 `Figures` 只 GET 状态与已缓存文件，不 POST 启动全文获取；`document/ensure` 作为显式 API 保留。自动失败的 `needs_browser/unavailable/error/interrupted` 显示上传入口，成功显示阅读与下载。后台从 PMC 或 Nature Portfolio 可核对的公开图表获取主图；有本机 PDF 时按文中主图编号和作者图注提取整页图像，并用于补充出版社页面未能取得的图号。首页原有底部状态显示 `readingPreparation.pending` 篇全文或主图正在准备，不增加操作按钮。阅读器按需加载 `pdfjs-dist@5.4.624` 与本地 worker，无外部 CDN；全部页面按实际尺寸连续排列，每页 Canvas + TextLayer 支持缩放和选中文字；IntersectionObserver 按阅读视口渲染附近页面像素，远离视口的 Canvas 释放内存，所有页面占位尺寸保持稳定，桌面左右阅读/问答，手机切换；关闭返回原邮箱阅读区。
 
-自动下载成功后异步提取所有页面，提取任务按论文去重。手工上传同样先通过 `pdf_identity.py` 核对 DOI 或完整标题，再由 pypdf 提取每一页；最多 50 MB / 1000 页、解析超时 120 秒。空白页保持空文本且返回页码，不用摘要代替全文，不做 OCR。上传验证完成后持久保存文件和逐页文本；后台失败原因可以展开查看。文件在本地缺失时，明确标为 `interrupted` 并允许上传。
+自动下载成功后异步提取所有页面，提取任务按论文去重。手工上传同样先通过 `pdf_identity.py` 核对 DOI 或完整标题，再由 pypdf 提取每一页。PDF 图文提取使用 `requirements.txt` 中的 PyMuPDF。最多 50 MB / 1000 页、解析超时 120 秒。空白页保持空文本且返回页码，不用摘要代替全文，不做 OCR。上传验证完成后持久保存文件和逐页文本；后台失败原因可以展开查看。文件在本地缺失时，明确标为 `interrupted` 并允许上传。
 
 问答使用请求发起时的 `activeAI()` 当前文字模型。每次发出整篇逐页提取文本、本篇当前 PDF 完整历史与问题，直接调用普通对话 API：OpenAI 兼容接口不传 `response_format`，Gemini 不传 JSON Schema 或 JSON MIME；回答是原始 Markdown 文本。不做向量检索、片段筛选、强制引用、页码/行号校验、固定段落格式或摘要替代；不再设置 240000 字符的应用级输入门槛，实际上下文限制以模型服务为准。输出最多 20000 tokens，调用失败或未完成会明确报错，不保存不完整回答、不切换模型。正文像素的按需渲染只影响浏览器内存，AI 请求仍包含全部页面文本。
 
@@ -288,7 +295,7 @@ npm test
 npm run build
 ```
 
-当前 53 项 Node 测试与 5 项 Python 测试全部通过，生产构建通过。新增端到端测试无需打开页面就完成子进程下载、真实 PDF 页面提取、官方 JATS 主图缓存和所选模型调用，并验证无重复请求、质控/范围/IF 派发、重启恢复、清单身份/版本/文件路径、通用 Content-Type 的图像签名判别。当前测试覆盖 PubMed 解析、完整 ESearch/Efetch 返回校验、日期检索、去重、邮箱初始化重建、检索/提交失败时事务回滚、方向标签、方向检索式修改后按窗口重检与事务回滚、影响因子过滤、分页、相关性质控队列、AI 配置、定时调度、全文主图、PDF 文件安全、下载尝试记录、上传正确/错误 PDF、失败状态保留、缺失文件恢复、全部页面与对话发送、普通对话协议、长全文和完整历史发送、旧回答兼容，以及空回答/失败回答不保存。每方向收取篇数的测试同时覆盖新安装默认 10、旧默认 8 的迁移以及保留用户自定义值。
+当前 64 项 Node 测试与 9 项 Python 测试全部通过，生产构建通过。端到端测试覆盖后台 PDF 下载、全文图注提取、PMC 与 Nature 图表获取、所选模型视觉解读，以及出版社部分图像由 PDF 补齐。
 
 涉及 UI 的修改还要：
 
@@ -315,6 +322,26 @@ npm run build
 不要把密钥、数据库、服务日志或浏览器个人数据写入源码包。不要通过伪造模型名、论文日期或影响因子来掩盖数据缺失。
 
 ## 13. 变更记录
+
+### 2.14.6（2026-11-25）
+
+- 收件箱默认按 PubMed 收录日期倒序，每页显示 50 篇；保留收信时间排序和 15/25/50 篇选择。
+- 64 项 Node 测试、9 项 Python 测试和生产构建通过；后端默认值、前端初始值及测试均已覆盖。
+
+### 2.14.5（2026-11-24）
+
+- 将中文题名从摘要导读中独立出来持久化，初始化后单独排队翻译；PubMed 没有摘要的记录仍可生成中文题名。收件箱、阅读页、全文阅读标题、中文搜索和导出均使用独立译名，同时保留英文原题。翻译失败可在阅读页重试。
+- PDF 下载、PMC 正文、出版社页面和图像解读按独立队列推进；出版社页面只提供部分图片时，以 PDF 主文中缺少的编号图补齐，不重复加入相同图号。启动时重新处理此前失败或新版可识别的主图、PDF 图注与题名任务。
+- PDF 主图识别逐行读取文本，接受带句点或无标点的编号 `Figure/Fig.` 图注，并跳过补充图和 Extended Data 图注。仍以可验证的作者图注定位页面，交给视觉模型的是原始整页图像。
+- 63 项 Node 测试、9 项 Python 测试和生产构建通过。端到端测试覆盖仅部分出版社图片可用时，由 PDF 补图并完成模型解读。服务器版本回归实测为 `2.14.5`，后台使用本机保存的模型配置。
+
+### 2.14.4（2026-11-24）
+
+- DeepSeek 兼容接口结构化生成改用 `json_object`，服务端继续用 Zod 校验返回内容。启动时将对应失败的导读、质控和 PMC 图文重新加入任务队列。
+- PDF 自动下载及手工上传后按主文编号图注逐页提取图表上下文，将 PDF 整页图像提交视觉模型。Nature 公开图像按 DOI 匹配并优先使用；PMC 正文主图可用时继续优先使用 PMC。
+- 界面区分 Nature、PMC 与 PDF 图源，显示 PDF 页码，解释图文准备状态。新增 PyMuPDF 依赖和出版社图表失败重试。
+- 将因 PDF 图文准备失败而停止该文档索引的逻辑改为独立队列。PubMed 官方摘要缺失时仍可读取 DOI 验证的 Nature 文章页图表，不受 PMC 元数据状态阻断。
+- 57 项 Node 测试、7 项 Python 测试和生产构建通过。使用本机配置模型实测真实中文导读和真实 Nature 主图解读。
 
 ### 2.14.3（2026-11-24）
 
@@ -453,7 +480,7 @@ npm run build
 接手时先执行：
 
 ```sh
-cd /Users/cai/Documents/Codex/2026-11-18/new-chat/outputs/paper-morning
+cd /path/to/paper-mail
 cat DEVELOPMENT.md
 npm test
 curl -s http://127.0.0.1:4317/api/state

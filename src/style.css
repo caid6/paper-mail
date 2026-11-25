@@ -932,6 +932,20 @@ svg {
   margin: 0 0 20px;
   font-family: Georgia,"Times New Roman",serif;
 }
+.title-translation-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: -6px 0 18px;
+  color: #a24f46;
+  font-size: 12px;
+}
+.figure-source-note {
+  margin: -8px 0 18px;
+  color: #7989a3;
+  font-size: 12px;
+  line-height: 1.7;
+}
 .authors-line {
   display: flex;
   flex-wrap: wrap;

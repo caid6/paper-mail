@@ -71,9 +71,8 @@ export async function jsonCompletion<T>(schema:z.ZodType<T>,instruction:string,e
  const prompt=JSON.stringify(evidence);let result:string;
  if(config.provider==='compatible'){
   const content=options.image?[{type:'text',text:prompt},{type:'image_url',image_url:{url:`data:${options.image.type};base64,${options.image.data.toString('base64')}`}}]:prompt;
-  const response_format=options.compatibleFormat==='json_object'
-    ? {type:'json_object'}
-    : {type:'json_schema',json_schema:{name:'paper_response',strict:true,schema:outputSchema}};
+  // DeepSeek 兼容接口当前支持 JSON Object。Zod 仍在服务端校验完整结构，避免依赖服务商的 JSON Schema 方言。
+  const response_format={type:'json_object'};
   const data=await checked(await modelFetch(config.base_url+'/chat/completions',{method:'POST',signal:AbortSignal.timeout(120000),headers:{'Content-Type':'application/json','Authorization':'Bearer '+config.key},body:JSON.stringify({model,messages:[{role:'system',content:system},{role:'user',content}],response_format,temperature:0.2,max_tokens:maxOutputTokens})}));
   if(data.choices?.[0]?.finish_reason!=='stop')throw new Error(data.choices?.[0]?.finish_reason==='length'?`模型生成达到 ${maxOutputTokens} tokens 上限，未能输出完整回答`:'模型未完整输出（'+(data.choices?.[0]?.finish_reason||'未知结束原因')+'），请检查模型服务');result=data.choices[0].message?.content;
  }else{
@@ -85,6 +84,10 @@ export async function jsonCompletion<T>(schema:z.ZodType<T>,instruction:string,e
 }
 const digestInstruction='你是严谨的中文医学人工智能论文阅读助手。仅依据给出的标题、作者摘要和元数据，生成简体中文导读。禁止编造数据、实验、指标、代码链接或结论，保留作者原始数字与限定条件。相关性不能写成因果。说明临床场景、研究设计、数据来源和验证方法，区分内部验证、外部验证、前瞻性评估及真实临床获益。摘要未报告的信息明确标注，不能假装读过全文，不能把模型性能等同于临床有效性。title_zh准确翻译标题；one_liner不超过60字；summary为150至250字通俗概要；problem解释研究问题；method解释设计与方法；findings列出2至4条摘要支持的发现；limitations列出1至3条证据边界和全文核查问题，不把推测写成已证实缺陷；reading_advice建议进一步阅读的章节。';
 export function generateDigest(p:PaperInput,config:AIConfig=activeAI()):Promise<Digest>{return jsonCompletion(digestSchema,digestInstruction,{title:p.title,abstract:p.abstract,authors:p.authors,published:p.publication_date||p.published,journal:p.journal,publication_types:p.pub_types},{config});}
+export const titleTranslationSchema=z.object({title_zh:z.string().min(1).max(1000)});
+export function translateTitle(title:string,config:AIConfig=activeAI()):Promise<{title_zh:string}>{
+ return jsonCompletion(titleTranslationSchema,'将给定的医学论文标题准确翻译为简体中文。只翻译题名，不扩写、不总结，不添加原题没有的信息。保留人名、基因/蛋白名称、模型名称、缩写和必要的英文专名。返回 title_zh。',{title},{config,maxOutputTokens:1200});
+}
 export const relevanceReviewSchema=z.object({verdict:z.enum(['relevant','borderline','irrelevant']),reason:z.string().min(1).max(1000),evidence:z.string().min(1).max(500)});
 const relevanceInstruction='你是医学人工智能文献质控员。判断论文是否真正属于给定研究方向，而不是仅在背景、讨论、展望、致谢或参考文献中顺带提及相关词。relevant表示该方向是论文的核心研究对象、方法、系统或主要综述主题；borderline表示相关技术只占重要的一部分，或摘要不足以确认核心性；irrelevant表示研究核心明显是普通医学、药物、生物学或其他主题，方向词只是偶然出现。只依据标题和作者摘要，不推测全文。reason用中文说明判断依据；evidence摘录标题或摘要中的关键短语，不得编造。';
 export function generateRelevanceReview(p:PaperInput,topic:{name:string;description?:string;query:string},config:AIConfig=activeAI()){return jsonCompletion(relevanceReviewSchema,relevanceInstruction,{topic:{name:topic.name,description:topic.description||'',query:topic.query},paper:{title:p.title,abstract:p.abstract,authors:p.authors,journal:p.journal,publication_date:p.publication_date||p.published}},{config});}

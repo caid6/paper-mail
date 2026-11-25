@@ -2,7 +2,7 @@ import {aiConfigured} from './ai.ts';
 import type {DB} from './core.ts';
 import {downloadedPath,pumpDownloads} from './downloads.ts';
 import {markMissingDownload,pumpDocumentIndexes} from './documents.ts';
-import {pumpFigures,pumpFulltexts} from './figures.ts';
+import {pumpPublisherFigures,pumpPDFFigureIndexes,pumpFigures,pumpFulltexts} from './figures.ts';
 import {readingScope} from './reading-scope.ts';
 
 export function queueReadingPreparation(db:DB){
@@ -22,11 +22,14 @@ export function prepareReading(db:DB,root:string){
   const id=String(row.paper_id);
   if(!downloadedPath(db,root,id))markMissingDownload(db,id);
  }
- const index=()=>void pumpDocumentIndexes(db,root).catch(error=>console.error('PDF 文本解析队列失败',error.message));
+ const index=()=>void pumpDocumentIndexes(db,root).then(()=>Promise.all([
+  pumpPublisherFigures(db,root).then(()=>pumpPDFFigureIndexes(db,root)).then(()=>pumpFigures(db,root)),
+  pumpPDFFigureIndexes(db,root).then(()=>pumpFigures(db,root)),
+ ])).catch(error=>console.error('全文图文准备失败',error.message));
  index();
  const download=()=>void pumpDownloads(db,root,index).catch(error=>console.error('PDF 下载队列失败',error.message));
  download();
- void pumpFulltexts(db,root,download).catch(error=>console.error('PMC 全文队列失败',error.message));
+ void pumpFulltexts(db,root,()=>{download();index();}).catch(error=>console.error('PMC 全文队列失败',error.message));
  void pumpFigures(db,root).catch(error=>console.error('主图队列失败',error.message));
 }
 
@@ -39,5 +42,12 @@ export function readingPreparationStats(db:DB){
      OR (d.status='ready' AND d.index_error IS NULL AND (pdf.file_name IS NULL OR pdf.file_name<>d.file_name))
      OR t.status IN ('pending','loading')
      OR EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND
-       (f.status='generating' OR (f.status='pending' AND (? OR f.image_path='')))))`).get(Number(aiConfigured()));
+       (f.status='generating' OR (f.status='pending' AND (? OR f.image_path=''))))
+     OR EXISTS(SELECT 1 FROM pdf_figure_indexes pf JOIN pdf_documents pd ON pd.paper_id=pf.paper_id
+       WHERE pf.paper_id=p.id AND pf.sha256=pd.sha256 AND pf.status='processing')
+     OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status='processing')
+     OR EXISTS(SELECT 1 FROM downloads d JOIN pdf_documents pd ON pd.paper_id=d.paper_id LEFT JOIN pdf_figure_indexes pf ON pf.paper_id=pd.paper_id
+       WHERE d.paper_id=p.id AND d.status='ready' AND pd.file_name=d.file_name
+         AND (pf.paper_id IS NULL OR pf.sha256<>pd.sha256 OR pf.status='pending')
+         AND (p.doi NOT LIKE '10.1038/%' OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status IN ('no_figures','error')))))`).get(Number(aiConfigured()));
 }

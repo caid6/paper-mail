@@ -29,7 +29,6 @@ export async function pumpDownloads(db:DB,root:string,onReady?:()=>void){
  try{for(;;){
   const paper=db.prepare(`SELECT p.id,p.title,p.doi,p.pmcid,t.pdf_url AS prepared_pdf FROM downloads d JOIN papers p ON p.id=d.paper_id LEFT JOIN fulltexts t ON t.paper_id=p.id
     WHERE d.status='pending' AND (d.automatic=0 OR (${readingScope(db)}))
-      AND (d.automatic=0 OR t.status IS NULL OR t.status NOT IN ('pending','loading'))
     ORDER BY p.received_at DESC,p.published DESC,p.id DESC LIMIT 1`).get();
   if(!paper)break;
   const id=String(paper.id);

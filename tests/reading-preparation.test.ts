@@ -8,7 +8,7 @@ import path from 'node:path';
 import {connect,setSetting,upsertPaper,type DB} from '../server/core.ts';
 import {queueReadingPreparation,prepareReading,readingPreparationStats} from '../server/reading-preparation.ts';
 import {documentState,pumpDocumentIndexes} from '../server/documents.ts';
-import {figureState,pumpFigures,pumpFulltexts,imageMimeType} from '../server/figures.ts';
+import {figureState,indexPDFFigures,pumpPublisherFigures,pumpFigures,pumpFulltexts,imageMimeType} from '../server/figures.ts';
 import {cloudURL,parsePMCXML,fetchPMC} from '../server/pmc.ts';
 import {pumpDownloads} from '../server/downloads.ts';
 
@@ -58,6 +58,88 @@ test('后台准备按邮箱、影响因子和质控状态派发，跨方向去�
   if(oldModel===undefined)delete process.env.AI_MODEL;else process.env.AI_MODEL=oldModel;
  }
 });
+test('Nature DOI 图表队列核对文章和图像并自动完成所选视觉模型的解读',async()=>{
+ const db=fixture(),root=mkdtempSync(path.join(tmpdir(),'paper-nature-publisher-'));
+ const originalFetch=globalThis.fetch;
+ const envKeys=['AI_API_KEY','AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL'] as const;
+ const originalEnv=Object.fromEntries(envKeys.map(key=>[key,process.env[key]]));
+ Object.assign(process.env,{AI_API_KEY:'test',AI_PROVIDER:'compatible',AI_BASE_URL:'https://model.example/v1',AI_MODEL:'test-text',AI_FIGURE_MODEL:'test-vision'});
+ upsertPaper(db,{...paper,id:'pmid:880',doi:'10.1038/test-2026-1',pmcid:'',journal:'Nature Medicine'},'medical-ai');
+ db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run('pmid:880');
+ const html='<html><head><meta name="citation_doi" content="10.1038/test-2026-1"><link rel="canonical" href="https://www.nature.com/articles/test-2026-1"></head><body><article><p>The external validation results are shown in <a href="#Fig1">Fig. 1</a>.</p><figure><figcaption><b id="Fig1" data-test="figure-caption-text">Fig. 1: External validation results.</b></figcaption><img src="//media.springernature.com/m312/springer-static/image/art%3A10.1038%2Ftest%2FFig1.png"></figure></article></body></html>';
+ const requests:string[]=[];
+ try{
+  globalThis.fetch=async(input,options)=>{
+   const url=String(input);requests.push(url);
+   if(url==='https://www.nature.com/articles/test-2026-1'){const response=new Response(html);Object.defineProperty(response,'url',{value:url});return response;}
+   if(url.includes('media.springernature.com/full/'))return new Response(image,{headers:{'content-type':'image/png'}});
+   if(url==='https://model.example/v1/chat/completions'){
+    const body=JSON.parse(String(options?.body));assert.equal(body.model,'test-vision');assert.equal(body.messages[1].content[1].type,'image_url');
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({title_zh:'外部验证图',overview:'模型与对照组的表现对比。',panels:[{label:'a',explanation:'外部验证结果'}],takeaway:'展示外部验证表现。',caveats:['图中结果不等同于临床获益。']})}}]});
+   }
+   throw new Error('Unexpected URL '+url);
+  };
+  void pumpPublisherFigures(db,root);
+  await until(()=>figureState(db,'pmid:880').figures[0]?.status==='ready');
+  const result=figureState(db,'pmid:880');
+  assert.equal(result.figures[0].origin,'publisher');assert.equal(result.figures[0].analysis.title_zh,'外部验证图');
+  assert.equal(result.figures[0].caption,'Fig. 1: External validation results.');
+  assert.ok(requests.includes('https://www.nature.com/articles/test-2026-1'));
+  assert.ok(requests.includes('https://model.example/v1/chat/completions'));
+ }finally{
+  globalThis.fetch=originalFetch;
+  for(const key of envKeys){const value=originalEnv[key];if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  db.close();rmSync(root,{recursive:true,force:true});
+ }
+});
+
+test('出版社只开放部分主图时，用 PDF 按图注补齐缺失编号并完成解读',async()=>{
+ const db=fixture(),root=mkdtempSync(path.join(tmpdir(),'paper-figure-source-merge-'));
+ const originalFetch=globalThis.fetch;
+ const envKeys=['AI_API_KEY','AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL'] as const;
+ const originalEnv=Object.fromEntries(envKeys.map(key=>[key,process.env[key]]));
+ const doi='10.1038/test-partial-2026',id='pmid:881';
+ const html=`<html><head><meta name="citation_doi" content="${doi}"><link rel="canonical" href="https://www.nature.com/articles/test-partial-2026"></head><body><article>
+  <figure><figcaption><b id="Fig1" data-test="figure-caption-text">Fig. 1: Study design.</b></figcaption><img src="//media.springernature.com/m312/springer-static/image/art%3A10.1038%2Ftest%2FFig1.png"></figure>
+  <figure><figcaption><b id="Fig2" data-test="figure-caption-text">Fig. 2: Main results.</b></figcaption><img src="//media.springernature.com/m312/springer-static/image/art%3A10.1038%2Ftest%2FFig2.png"></figure>
+ </article></body></html>`;
+ Object.assign(process.env,{AI_API_KEY:'test',AI_PROVIDER:'compatible',AI_BASE_URL:'https://model.example/v1',AI_MODEL:'test-text',AI_FIGURE_MODEL:'test-vision'});
+ try{
+  upsertPaper(db,{...paper,id,doi,pmcid:''},'medical-ai');
+  db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run(id);
+  mkdirSync(path.join(root,'scripts'));
+  symlinkSync(path.resolve('scripts/extract_pdf_figures.py'),path.join(root,'scripts','extract_pdf_figures.py'));
+  globalThis.fetch=async(input,options)=>{
+   const url=String(input);
+   if(url==='https://www.nature.com/articles/test-partial-2026'){
+    const response=new Response(html);Object.defineProperty(response,'url',{value:url});return response;
+   }
+   if(url.includes('Fig1.png'))return new Response(image,{headers:{'content-type':'image/png'}});
+   if(url.includes('Fig2.png'))return new Response('<html>not available</html>',{headers:{'content-type':'text/html'}});
+   if(url==='https://model.example/v1/chat/completions'){
+    const body=JSON.parse(String(options?.body));assert.equal(body.model,'test-vision');
+    return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({title_zh:'论文图',overview:'图像显示研究数据。',panels:[],takeaway:'呈现主要结果。',caveats:['不能仅凭图像判断临床获益。']})}}]});
+   }
+   throw new Error('Unexpected URL '+url);
+  };
+  await import('../server/figures.ts').then(module=>module.indexPublisherFigures(db,root,id));
+  assert.equal(db.prepare('SELECT status FROM publisher_figure_indexes WHERE paper_id=?').get(id)!.status,'partial');
+  mkdirSync(path.join(root,'data','downloads',id.replace('pmid:','')),{recursive:true});
+  const pdf=path.join(root,'data','downloads',id.replace('pmid:',''),'paper.pdf');
+  execFileSync('/opt/homebrew/bin/python3',['-c',`import fitz
+d=fitz.open();p=d.new_page(width=600,height=800);p.draw_rect(fitz.Rect(60,80,540,360));p.insert_text((60,440),'Figure 1: Study design.',fontsize=12);p.draw_rect(fitz.Rect(60,490,540,650));p.insert_text((60,720),'Figure 2 - Main results.',fontsize=12);d.save(r'${pdf}');d.close()`]);
+  await indexPDFFigures(db,root,id,pdf);
+  assert.deepEqual((db.prepare('SELECT origin,label FROM figures WHERE paper_id=? ORDER BY position,label').all(id) as any[]).map(row=>[row.origin,row.label]),[['publisher','Figure 1'],['pdf','Figure 2']]);
+  void pumpFigures(db,root);
+  await until(()=>figureState(db,id).figures.length===2&&figureState(db,id).figures.every(figure=>figure.status==='ready'));
+  assert.ok(figureState(db,id).figures.every(figure=>figure.analysis?.title_zh==='论文图'));
+ }finally{
+  globalThis.fetch=originalFetch;
+  for(const key of envKeys){const value=originalEnv[key];if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  db.close();rmSync(root,{recursive:true,force:true});
+ }
+});
+
 test('官方 JATS 按主图文件清单精确匹配，验证身份且不混入补图',()=>{
  const result=parsePMCXML(figureXML,'PMC777','777',[imageURL]);
  assert.equal(result.figures.length,1);assert.equal(result.figures[0].image_url,imageURL);
@@ -79,15 +161,13 @@ test('无需打开页面，后台自动完成 PDF 下载、全部页解析、主
  let modelCalls=0;const requests:string[]=[];
  try{
   mkdirSync(path.join(root,'scripts'));
-  for(const name of ['read_document.py','pdf_identity.py'])symlinkSync(path.resolve('scripts',name),path.join(root,'scripts',name));
-  execFileSync('/opt/homebrew/bin/python3',['-c',`from pypdf import PdfWriter
+  for(const name of ['read_document.py','pdf_identity.py','extract_pdf_figures.py'])symlinkSync(path.resolve('scripts',name),path.join(root,'scripts',name));
+  execFileSync('/opt/homebrew/bin/python3',['-c',`import fitz
 from pathlib import Path
-w=PdfWriter();w.add_blank_page(width=600,height=800);w.add_metadata({'/Title':'Clinical foundation models'})
-w.write(str(Path(r'${root}')/'source.pdf'))`]);
+d=fitz.open();p=d.new_page(width=600,height=800);p.insert_text((70,70),'Clinical foundation models',fontsize=16);p.draw_rect(fitz.Rect(80,150,520,410),color=(0.1,0.2,0.8),width=3);p.insert_text((80,455),'Figure 1. Study design and external validation.',fontsize=12);d.set_metadata({'title':'Clinical foundation models'});d.save(str(Path(r'${root}')/'source.pdf'));d.close()`]);
   writeFileSync(path.join(root,'scripts','download_bridge.py'),`import json,sys,shutil
 from pathlib import Path
 r=json.loads(sys.stdin.read())
-assert r['prepared_pdf']=='${pdfURL}'
 out=Path(r['output_dir']);shutil.copyfile(Path(__file__).parent.parent/'source.pdf',out/'article.pdf')
 with (Path(__file__).parent.parent/'requests.txt').open('a') as f:f.write('download\\n')
 print(json.dumps({'status':'ready','source':'test-source','file_name':'article.pdf'}))
