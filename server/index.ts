@@ -4,8 +4,8 @@ import express from 'express';
 import { mkdirSync, existsSync, writeFileSync, readFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { z } from 'zod';
-import { connect, settings, setSetting, subscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
-import { fetchPubmed, pubmedDefaults, pubmedLegacyQueries,medicalAgentsExplanation, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
+import { connect, settings, setSetting, subscriptions, hasEnabledSubscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
+import { fetchPubmed, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
 import { generateDigest, translateTitle, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
 import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval} from './library.ts';
 import {enrichLibrary,enrichPaper,journalFilter,journalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
@@ -20,14 +20,11 @@ import {generateJournalPlan} from './journal-plans.ts';
 const root=process.cwd();mkdirSync(path.join(root,'data'),{recursive:true});
 const db=connect(path.join(root,'data','papers.sqlite'));
 enrichLibrary(db);
-if(!settings(db).impact_filter_initialized){setSetting(db,'min_impact_factor','10');setSetting(db,'impact_filter_initialized','true');}
-if(!settings(db).min_impact_operator)setSetting(db,'min_impact_operator','gte');
 if(!settings(db).pubmed_migration){
   db.exec('BEGIN IMMEDIATE');
   try {
     db.prepare("UPDATE papers SET archived=1, archive_origin='legacy' WHERE source='arxiv'").run();
     for(const id of ['ai','foundation','agents'])db.prepare('DELETE FROM subscriptions WHERE id=?').run(id);
-    for(const s of pubmedDefaults)db.prepare('INSERT OR IGNORE INTO subscriptions(id,name,color,query) VALUES(?,?,?,?)').run(s.id,s.name,s.color,s.query);
     setSetting(db,'pubmed_migration','true');setSetting(db,'last_daily_date','');setSetting(db,'last_sync','');
     db.exec('COMMIT');
   }catch(e){db.exec('ROLLBACK');throw e;}
@@ -109,16 +106,9 @@ async function pumpQuality(){
     }).finally(()=>{qualityWorkers--;void pumpQuality();prepareReading(db,root);});
   }
 }
-async function migrateDefaultQueries(){
-  const key='pubmed_quality_query_version';if(settings(db)[key]==='3')return;
-  for(const legacy of pubmedLegacyQueries){
-    const next=pubmedDefaults.find(s=>s.id===legacy.id);const current:any=db.prepare('SELECT * FROM subscriptions WHERE id=?').get(legacy.id);
-    if(!next||!current||current.query!==legacy.query)continue;
-    await writeTopic(next.id,{...current,enabled:!!current.enabled,query:next.query,description:current.description||'医学与生物医学场景中的人工智能智能体，包括临床、健康管理和药物研发',query_explanation:medicalAgentsExplanation});
-  }
-  setSetting(db,key,'3');
-}
 async function performSync(kind:string,options:SyncOptions={}){
+  const topics=subscriptions(db).filter(topic=>topic.enabled);
+  if(!topics.length&&!options.initialize)return;
   const run=db.prepare("INSERT INTO sync_runs(started_at,kind,status) VALUES(?,?,'running')").run(new Date().toISOString(),kind);
   const initial=options.initialize;
   let added=0;const errors:string[]=[];const groups:TopicMatches[]=[];
@@ -129,7 +119,6 @@ async function performSync(kind:string,options:SyncOptions={}){
       threshold:initial.min_impact_factor===null?null:{value:initial.min_impact_factor,operator:initial.min_impact_operator??'gte'},
       ids:initial.journal_filter_ids??savedFilter.ids,
     }:savedFilter;
-    const topics=subscriptions(db).filter(x=>x.enabled);
     if(initial&&!topics.length)throw new Error('至少需要启用一个研究方向');
     const journalSearch=await prepareJournalSearch(filter.threshold?.value??null,filter.ids,filter.threshold?.operator);
     for(const sub of topics){
@@ -161,6 +150,10 @@ async function performSync(kind:string,options:SyncOptions={}){
 function qualityStats(){return db.prepare(`SELECT COUNT(*) FILTER (WHERE r.status IN ('pending','running','error') AND ps.paper_id IS NOT NULL) AS pending,COUNT(*) FILTER (WHERE r.verdict='relevant' AND ps.paper_id IS NOT NULL) AS relevant,COUNT(*) FILTER (WHERE r.verdict='borderline' AND ps.paper_id IS NOT NULL) AS borderline,COUNT(*) FILTER (WHERE r.verdict='irrelevant' AND ps.paper_id IS NULL) AS irrelevant
  FROM relevance_reviews r JOIN papers p ON p.id=r.paper_id LEFT JOIN paper_subscriptions ps ON ps.paper_id=r.paper_id AND ps.subscription_id=r.subscription_id WHERE p.in_library=1`).get();}
 app.get('/api/health',(_req,res)=>res.json({app:'paper-mail'}));
+app.put('/api/onboarding/dismiss',(_req,res)=>{
+  setSetting(db,'onboarding_seen','true');
+  res.json({ok:true});
+});
 app.get('/api/state',(_req,res)=>res.json({settings:settings(db),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
 app.get('/api/papers',(req,res)=>res.json(listPapers(db,listSchema.parse(req.query))));
 app.get('/api/papers/:id',(req,res)=>{const p=getPaper(db,req.params.id);if(!p)return res.status(404).json({error:'论文不存在'});res.json(p);});
@@ -228,6 +221,7 @@ app.put('/api/preferences',(req,res)=>{
 const initializationSchema=z.object({start:z.iso.date(),end:z.iso.date(),date_field:z.enum(['crdt','pdat']),range:z.enum(['7','30','90','180','365','custom']),limit:z.number().int().min(1).max(5000),min_impact_factor:z.number().min(0).max(1000).nullable(),min_impact_operator:z.enum(['gt','gte']).optional(),journal_filter_ids:journalIdsSchema.optional(),journal_filter_description:journalDescriptionSchema.optional(),quality_enabled:z.boolean()}).refine(x=>x.start<=x.end,{message:'开始日期不能晚于结束日期'});
 app.post('/api/initialize',(req,res)=>{
   const input=initializationSchema.parse(req.body);if(syncing)return res.status(409).json({error:'正在收取论文，请稍候'});
+  if(!hasEnabledSubscriptions(db))return res.status(409).json({error:'请先添加或启用一个研究方向'});
   if(input.journal_filter_ids)input.journal_filter_ids=requireJournalIds(input.journal_filter_ids);
   setSetting(db,'initialize_status','running');setSetting(db,'initialize_error','');setSetting(db,'initialize_started_at',new Date().toISOString());
   void sync('initialize',{dateClause:pubmedDateClause(input.start,input.end,input.date_field),initialize:input});res.status(202).json({ok:true});
@@ -259,7 +253,13 @@ app.post('/api/papers/:id/title/retry',(req,res)=>{
   void pumpTitles();res.status(202).json({ok:true});
 });
 app.post('/api/read-all',(_req,res)=>{db.prepare('UPDATE papers SET is_read=1 WHERE archived=0 AND in_library=1').run();res.json({ok:true});});
-app.post('/api/sync',(_req,res)=>{if(syncing)return res.status(409).json({error:'正在更新，请稍候'});const s=settings(db);void sync('manual',{dateClause:s.library_initialized_on?dailyDateClause(s):''});res.status(202).json({ok:true});});
+app.post('/api/sync',(_req,res)=>{
+  if(syncing)return res.status(409).json({error:'正在更新，请稍候'});
+  if(!hasEnabledSubscriptions(db))return res.status(409).json({error:'请先添加或启用一个研究方向'});
+  const s=settings(db);
+  void sync('manual',{dateClause:s.library_initialized_on?dailyDateClause(s):''});
+  res.status(202).json({ok:true});
+});
 const subscriptionSchema=z.object({name:z.string().trim().min(1).max(40),query:z.string().trim().min(1).max(5000),color:z.string().regex(/^#[\da-fA-F]{6}$/),enabled:z.boolean(),description:z.string().trim().max(3000).default(''),query_explanation:z.string().max(5000).default('')});
 app.post('/api/subscriptions/generate',async(req,res)=>{const {description}=z.object({description:z.string().trim().min(4).max(3000)}).parse(req.body);const plan=await generateSearch(description);const validation=await previewPubmed(plan.query);res.json({...plan,...validation});});
 app.post('/api/subscriptions/preview',async(req,res)=>{const {query}=z.object({query:z.string().trim().min(1).max(5000)}).parse(req.body);res.json(await previewPubmed(query));});
@@ -330,9 +330,14 @@ if(!process.argv.includes('--dev')&&existsSync(path.join(root,'dist','index.html
 else{const {createServer}=await import('vite');const vite=await createServer({server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
 app.use((err:any,_req:any,res:any,_next:any)=>{if(err instanceof DocumentError)return res.status(err.status).json({error:err.message});if(err.type==='entity.too.large')return res.status(413).json({error:'上传文件不能超过 50 MB'});if(err instanceof z.ZodError)return res.status(400).json({error:'输入内容不符合要求，请检查字段'});console.error(err.message);res.status(500).json({error:err.name==='TimeoutError'?'请求超时，请稍后重试':err.message==='fetch failed'?'无法连接远端服务，请检查地址与网络后重试':err.message||'服务处理失败'});});
 const port=Number(process.env.PORT||4317);
-app.listen(port,'127.0.0.1',async()=>{console.log(`研邮 Paper-mail已启动：http://127.0.0.1:${port}`);try{await withLibraryLock(migrateDefaultQueries);}catch(e:any){console.error('研究方向检索式迁移失败：'+e.message);}void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);void refreshJournalMetadata().finally(()=>{prepareReading(db,root);void tick();});});
+app.listen(port,'127.0.0.1',()=>{console.log(`研邮 Paper-mail已启动：http://127.0.0.1:${port}`);void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);void refreshJournalMetadata().finally(()=>{prepareReading(db,root);void tick();});});
 let attemptedDate='';
-async function tick(){const s=settings(db);const day=localClock(new Date(),s.timezone).date;if(!syncing&&dailyDue(new Date(),s)&&attemptedDate!==day){attemptedDate=day;await sync('daily',{dateClause:dailyDateClause(s)});}}
+async function tick(){
+  if(syncing||!hasEnabledSubscriptions(db))return;
+  const s=settings(db),now=new Date();
+  const day=localClock(now,s.timezone).date;
+  if(dailyDue(now,s)&&attemptedDate!==day){attemptedDate=day;await sync('daily',{dateClause:dailyDateClause(s)});}
+}
 setInterval(()=>void tick(),30000).unref();
 
 function dailyDateClause(s:Record<string,string>){

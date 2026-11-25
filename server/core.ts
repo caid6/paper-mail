@@ -3,8 +3,6 @@ import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { z } from 'zod';
 import {enrichPaper} from './journals.ts';
 
-export {pubmedDefaults as defaults} from './pubmed.ts';
-import {pubmedDefaults as defaults} from './pubmed.ts';
 export type Subscription = {id:string;name:string;color:string;query:string;enabled:number;description:string;query_explanation:string};
 export type PaperInput = {id:string;title:string;abstract:string;authors:string[];published:string;updated:string;categories:string[];url:string;pdf_url:string;source?:string;journal?:string;publication_date?:string;indexed_at?:string;doi?:string;pmcid?:string;pub_types?:string[];full_text_url?:string;journal_issns?:string[]};
 export type Paper = PaperInput & {title_zh:string|null;title_status:string;title_error:string|null;received_at:string;is_read:number;starred:number;archived:number;archive_origin:'manual'|'quality'|'legacy'|null;in_library:number;note:string;digest_status:string;digest_error:string|null;digest:Digest|null;subscriptions:Subscription[];quality_reviews:any[]};
@@ -76,7 +74,7 @@ export function connect(path:string) {
   db.exec("UPDATE fulltexts SET status='pending' WHERE status='loading'");
   db.prepare("UPDATE figures SET status='pending' WHERE status='generating'").run();
   const put=db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
-  for(const [k,v] of Object.entries({time:'07:30',timezone:'Asia/Shanghai',per_topic:'10',auto_sync:'true',quality_enabled:'true',last_daily_date:'',last_sync:'',min_impact_operator:'gte',backfill_status:'not_started',backfill_range:'30',backfill_days:'30',backfill_limit:'200',backfill_date_field:'crdt',json_output_migration:'pending',figure_queue_migration:'pending',content_retry_migration:'pending',queue_retry_migration:'pending',figure_sources_migration:'pending'}))put.run(k,v);
+  for(const [k,v] of Object.entries({time:'07:30',timezone:'Asia/Shanghai',per_topic:'10',auto_sync:'true',quality_enabled:'true',last_daily_date:'',last_sync:'',min_impact_factor:'',min_impact_operator:'gte',onboarding_seen:'false',backfill_status:'not_started',backfill_range:'30',backfill_days:'30',backfill_limit:'200',backfill_date_field:'crdt',json_output_migration:'pending',figure_queue_migration:'pending',content_retry_migration:'pending',queue_retry_migration:'pending',figure_sources_migration:'pending'}))put.run(k,v);
   if(settings(db).json_output_migration==='pending'){
     const oldError='AI 请求失败（HTTP 400）：该服务不支持当前参数或模型，请检查配置';
     db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE digest_status='error' AND digest_error=? AND (in_library=1 OR starred=1)").run(oldError);
@@ -119,11 +117,6 @@ export function connect(path:string) {
     if(currentSettings.per_topic==='8')setSetting(db,'per_topic','10');
     setSetting(db,'per_topic_migration','2');
   }
-  if(!db.prepare("SELECT value FROM settings WHERE key='initialized'").get()) {
-    const ins=db.prepare('INSERT INTO subscriptions(id,name,color,query) VALUES(?,?,?,?)');
-    for(const s of defaults)ins.run(s.id,s.name,s.color,s.query);
-    put.run('initialized','true');
-  }
   db.prepare("UPDATE papers SET digest_status='pending' WHERE digest_status='generating'").run();
   db.prepare("UPDATE papers SET title_status='pending' WHERE title_status='generating'").run();
   db.prepare("UPDATE relevance_reviews SET status='pending' WHERE status='running'").run();
@@ -138,6 +131,9 @@ export type DB=ReturnType<typeof connect>;
 export function settings(db:DB):Record<string,string>{ return Object.fromEntries((db.prepare('SELECT * FROM settings').all() as {key:string;value:string}[]).map(x=>[x.key,x.value])); }
 export function setSetting(db:DB,key:string,value:string){db.prepare('INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,value);}
 export function subscriptions(db:DB){return db.prepare('SELECT * FROM subscriptions ORDER BY rowid').all() as Subscription[];}
+export function hasEnabledSubscriptions(db:DB){
+  return Boolean(db.prepare('SELECT 1 FROM subscriptions WHERE enabled=1 LIMIT 1').get());
+}
 export function upsertPaper(db:DB,p:PaperInput,subscriptionId:string,now=new Date().toISOString()) {
   db.exec('BEGIN IMMEDIATE');
   try {

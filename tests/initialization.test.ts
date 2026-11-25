@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connect,upsertPaper,type PaperInput} from '../server/core.ts';
+import {upsertPaper,type PaperInput} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {replaceLibrary} from '../server/initialization.ts';
 import {journalFilter} from '../server/journals.ts';
 import {listPapers,listSchema} from '../server/library.ts';
@@ -13,12 +14,12 @@ test('初始化按检索结果重建邮箱范围，移出窗外文献并保留�
  const db=connect(':memory:');
  try{
   const outside=paper('100','2026-08-01'),retained=paper('200','2026-11-10'),added=paper('300','2026-11-18');
-  upsertPaper(db,outside,'medical-ai');
-  upsertPaper(db,retained,'medical-ai');
+  upsertPaper(db,outside,'topic-a');
+  upsertPaper(db,retained,'topic-a');
   db.prepare("UPDATE papers SET is_read=1,starred=1,note='保留的研究笔记' WHERE id='pmid:200'").run();
   const firstRun=db.prepare("INSERT INTO sync_runs(started_at,kind,status) VALUES('now','initialize','running')").run();
   const options={start:'2026-11-01',end:'2026-11-20',range:'custom' as const,date_field:'crdt' as const,limit:200,quality_enabled:true,min_impact_factor:null};
-  const first=replaceLibrary(db,[{subscriptionId:'medical-ai',papers:[retained,added]},{subscriptionId:'medical-foundation',papers:[retained]}],options,'2026-11-20T00:00:00.000Z','2026-11-20',firstRun.lastInsertRowid);
+  const first=replaceLibrary(db,[{subscriptionId:'topic-a',papers:[retained,added]},{subscriptionId:'topic-b',papers:[retained]}],options,'2026-11-20T00:00:00.000Z','2026-11-20',firstRun.lastInsertRowid);
   assert.deepEqual(first,{matched:2,inbox:2,added:1,previous:2});
   assert.equal(listPapers(db,listSchema.parse({folder:'inbox'})).total,2);
   assert.equal(listPapers(db,listSchema.parse({folder:'archive'})).total,0);
@@ -32,7 +33,7 @@ test('初始化按检索结果重建邮箱范围，移出窗外文献并保留�
   assert.equal(db.prepare("SELECT in_library FROM papers WHERE id='pmid:100'").get()!.in_library,0);
 
   const secondRun=db.prepare("INSERT INTO sync_runs(started_at,kind,status) VALUES('later','initialize','running')").run();
-  const second=replaceLibrary(db,[{subscriptionId:'medical-ai',papers:[added]}],{...options,start:'2026-11-15',min_impact_operator:'gt',min_impact_factor:10},'2026-11-21T00:00:00.000Z','2026-11-21',secondRun.lastInsertRowid);
+  const second=replaceLibrary(db,[{subscriptionId:'topic-a',papers:[added]}],{...options,start:'2026-11-15',min_impact_operator:'gt',min_impact_factor:10},'2026-11-21T00:00:00.000Z','2026-11-21',secondRun.lastInsertRowid);
   assert.deepEqual(second,{matched:1,inbox:1,added:0,previous:2});
   assert.deepEqual(journalFilter(db).threshold,{operator:'gt',value:10});
   db.prepare("UPDATE settings SET value='' WHERE key='min_impact_factor'").run();
@@ -41,7 +42,7 @@ test('初始化按检索结果重建邮箱范围，移出窗外文献并保留�
   assert.equal(listPapers(db,listSchema.parse({folder:'removed'})).total,2);
   assert.equal(db.prepare("SELECT note FROM papers WHERE id='pmid:200'").get()!.note,'保留的研究笔记');
 
-  assert.equal(upsertPaper(db,retained,'medical-ai','2026-11-22T00:00:00.000Z'),true);
+  assert.equal(upsertPaper(db,retained,'topic-a','2026-11-22T00:00:00.000Z'),true);
   assert.equal(db.prepare("SELECT in_library FROM papers WHERE id='pmid:200'").get()!.in_library,1);
   assert.equal(settingsStatus(db),'2026-11-21');
  }finally{db.close();}
@@ -51,7 +52,7 @@ test('初始化写入失败时事务回滚并保留现有邮箱范围',()=>{
  const db=connect(':memory:');
  try{
   const existing=paper('400','2026-11-10');
-  upsertPaper(db,existing,'medical-ai');
+  upsertPaper(db,existing,'topic-a');
   const run=db.prepare("INSERT INTO sync_runs(started_at,kind,status) VALUES('now','initialize','running')").run();
   assert.throws(()=>replaceLibrary(db,[{subscriptionId:'missing-topic',papers:[paper('500','2026-11-15')]}],{
    start:'2026-11-01',end:'2026-11-20',range:'custom',date_field:'crdt',limit:200,quality_enabled:true,min_impact_factor:null,

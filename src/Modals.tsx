@@ -31,11 +31,118 @@ export function SettingsPanel({state,onSaved,notify,initialTab='api'}:{state:Sta
  </div></div>;
 }
 export function TopicsPanel({state,onSaved,notify}:{state:State;onSaved:()=>Promise<void>;notify:(s:string)=>void}){
- const [active,setActive]=useState<string>('new'),[description,setDescription]=useState(''),[generatedFor,setGeneratedFor]=useState(''),[name,setName]=useState(''),[query,setQuery]=useState(''),[explanation,setExplanation]=useState(''),[color,setColor]=useState('#3b6cf4'),[enabled,setEnabled]=useState(true),[plan,setPlan]=useState<SearchPlan|null>(null),[validatedQuery,setValidatedQuery]=useState(''),[busy,setBusy]=useState(''),[error,setError]=useState(''),[deleting,setDeleting]=useState(false);
- function select(s?:Subscription){setActive(s?.id||'new');const text=s?.description||s?.name||'';setDescription(text);setGeneratedFor(s?text:'');setName(s?.name||'');setQuery(s?.query||'');setValidatedQuery(s?.query||'');setExplanation(s?.query_explanation||'');setColor(s?.color||'#3b6cf4');setEnabled(s?!!s.enabled:true);setPlan(null);setError('');setDeleting(false);}
- async function generate(){setBusy('generate');setError('');try{const d=await api<SearchPlan>('/subscriptions/generate','POST',{description});setPlan(d);setName(d.name);setQuery(d.query);setExplanation(d.explanation);setGeneratedFor(description);setValidatedQuery(d.query);}catch(e:any){setError(e.message);}finally{setBusy('');}}
- async function preview(){setBusy('preview');setError('');try{const d=await api('/subscriptions/preview','POST',{query});setPlan(p=>({...p,name,query,explanation,concepts:p?.concepts||[],scope_notes:p?.scope_notes||[],...d}));setValidatedQuery(query);}catch(e:any){setError(e.message);}finally{setBusy('');}}
- async function save(){setBusy('save');setError('');try{const result=await api('/subscriptions'+(active==='new'?'':'/'+active),active==='new'?'POST':'PUT',{name,query,color,enabled,description,query_explanation:explanation});await onSaved();setActive(result.id);notify(`方向已保存 · ${result.matched} 篇现有论文已关联此标签`);}catch(e:any){setError(e.message);}finally{setBusy('');}}
- const canSave=name.trim()&&query.trim()&&description===generatedFor&&query===validatedQuery&&(!plan||!plan.warnings.length);
- return <div className="topics-layout"><aside className="topics-sidebar"><button className="button primary add-topic" onClick={()=>select()} disabled={!!busy}><Plus size={16}/>新建研究方向</button>{state.subscriptions.map(s=><button key={s.id} className={'topic-editor-item '+(active===s.id?'active':'')} onClick={()=>select(s)} disabled={!!busy}><i style={{background:s.color}}/><span>{s.name}<small>{s.enabled?'订阅中':'已暂停'} · {state.topic_counts.find(x=>x.id===s.id)?.total||0} 篇</small></span><ChevronRight size={14}/></button>)}<div className="topic-sidebar-note">方向是论文的标签。<br/>同一篇论文可以同时命中多个方向。</div></aside><div className="topic-editor"><div className="settings-section-title"><div><h3>{active==='new'?'用一句话，开始新的订阅':'编辑研究方向'}</h3><p>描述研究问题，自动生成标题与摘要检索方案，并向 PubMed 验证。</p></div></div><label className="field">我想关注什么研究？<textarea className="research-description" aria-label="研究方向描述" disabled={!!busy} value={description} onChange={e=>setDescription(e.target.value)} maxLength={3000} placeholder="例如：我关注大语言模型和智能体在消化道肿瘤诊疗中的应用，重点是临床验证、医生协作和真实世界研究。"/></label><div className="generate-row"><button className="button primary" onClick={generate} disabled={!!busy||description.trim().length<4}>{busy==='generate'?<LoaderCircle className="spin" size={16}/>:<Sparkles size={16}/>}生成检索方案</button><span>{busy==='generate'?'正在生成，并向 PubMed 验证…':'不需要自己编写检索语法'}</span></div>{query&&<div className="query-plan"><div className="query-plan-heading"><span><Search size={16}/>检索方案</span>{plan&&<strong>全库匹配 {plan.count.toLocaleString()} 篇</strong>}</div><label className="field">方向名称<input aria-label="方向名称" disabled={!!busy} value={name} maxLength={40} onChange={e=>setName(e.target.value)}/></label>{explanation&&<p className="query-explanation">{explanation}</p>}{plan?.concepts.map((c,i)=><div className="concept-row" key={i}><strong>{c.name}</strong><div>{c.terms.map((term,j)=><span key={j}>{term}</span>)}</div></div>)}{plan?.scope_notes.map((n,i)=><p className="scope-note" key={i}>{n}</p>)}<details className="query-details"><summary>查看和编辑 PubMed 检索式</summary><textarea aria-label="PubMed 检索式" disabled={!!busy} value={query} onChange={e=>{setQuery(e.target.value);setExplanation('检索式已手动调整，以当前检索式为准。');}}/><button className="button secondary small" disabled={!!busy} onClick={preview}>{busy==='preview'?<LoaderCircle className="spin" size={14}/>:<Search size={14}/>}验证检索式</button>{plan&&<p className="query-translation">PubMed 实际检索：{plan.translation}</p>}</details>{plan?.warnings.length? <div className="query-warnings"><strong>存在未被识别的检索词，请调整并重新验证后保存</strong>{plan.warnings.map((w,i)=><p key={i}>{w}</p>)}</div>:null}<div className="topic-options"><label>标签颜色<div className="color-choices">{['#3b6cf4','#8057d9','#d05d91','#d88c2b','#29978a','#67758b'].map(c=><button key={c} aria-label={'标签颜色'+c} className={color===c?'selected':''} style={{background:c}} onClick={()=>setColor(c)}>{color===c&&<Check size={12}/>}</button>)}</div></label><label className="inline-checkbox"><input type="checkbox" checked={enabled} onChange={e=>setEnabled(e.target.checked)}/>启用每日订阅</label></div></div>}{description!==generatedFor&&query&&<p className="field-warning">研究方向已修改，请重新生成检索方案后保存。</p>}{query!==validatedQuery&&<p className="field-warning">检索式已修改，请先验证。</p>}{error&&<div className="error-message" role="alert"><AlertCircle size={17}/>{error}</div>}<div className="topic-editor-footer">{active!=='new'?<button className="text-button danger" disabled={!!busy} onClick={()=>setDeleting(true)}><Trash2 size={14}/>删除方向</button>:<span/>}<button className="button primary" disabled={!!busy||!canSave} onClick={save}>{busy==='save'?<LoaderCircle className="spin" size={16}/>:<Check size={16}/>}保存研究方向</button></div>{deleting&&<div className="delete-confirm"><p>删除这个方向及其标签关联？已收取的论文和笔记会保留。</p><button className="button secondary small" onClick={()=>setDeleting(false)}>取消</button><button className="button danger-button small" onClick={async()=>{setBusy('delete');try{await api('/subscriptions/'+active,'DELETE');await onSaved();select();notify('研究方向已删除，论文仍保留');}catch(e:any){setError(e.message);}finally{setBusy('');}}}>确认删除</button></div>}</div></div>;
+ const [active,setActive]=useState<string>('new');
+ const [mode,setMode]=useState<'ai'|'manual'>(state.ai.configured?'ai':'manual');
+ const [description,setDescription]=useState(''),[generatedFor,setGeneratedFor]=useState('');
+ const [name,setName]=useState(''),[query,setQuery]=useState(''),[explanation,setExplanation]=useState('');
+ const [color,setColor]=useState('#3b6cf4'),[enabled,setEnabled]=useState(true);
+ const [plan,setPlan]=useState<SearchPlan|null>(null),[validatedQuery,setValidatedQuery]=useState('');
+ const [busy,setBusy]=useState(''),[error,setError]=useState(''),[deleting,setDeleting]=useState(false);
+
+ function select(topic?:Subscription){
+  const text=topic?.description||'';
+  setActive(topic?.id||'new');
+  setDescription(text);setGeneratedFor(text);
+  setName(topic?.name||'');setQuery(topic?.query||'');setValidatedQuery(topic?.query||'');
+  setExplanation(topic?.query_explanation||'');setColor(topic?.color||'#3b6cf4');
+  setEnabled(topic?!!topic.enabled:true);
+  setPlan(null);setError('');setDeleting(false);
+ }
+ async function generate(){
+  setBusy('generate');setError('');
+  try{
+   const result=await api<SearchPlan>('/subscriptions/generate','POST',{description});
+   setPlan(result);setName(result.name);setQuery(result.query);
+   setExplanation(result.explanation);setGeneratedFor(description);setValidatedQuery(result.query);
+  }catch(e:any){setError(e.message);}finally{setBusy('');}
+ }
+ function editQuery(value:string){
+  setQuery(value);
+  setValidatedQuery('');
+  setPlan(null);
+  setExplanation('');
+ }
+ async function preview(){
+  setBusy('preview');setError('');
+  try{
+   const result=await api<Pick<SearchPlan,'count'|'translation'|'warnings'>>('/subscriptions/preview','POST',{query});
+   setPlan({name,query,explanation,concepts:[],scope_notes:[],...result});
+   setValidatedQuery(query);
+  }catch(e:any){setError(e.message);}finally{setBusy('');}
+ }
+ async function save(){
+  setBusy('save');setError('');
+  try{
+   const path=active==='new'?'/subscriptions':'/subscriptions/'+active;
+   const result=await api<{id:string;added:number}>(path,active==='new'?'POST':'PUT',{name,query,color,enabled,description,query_explanation:explanation});
+   await onSaved();setActive(result.id);
+   notify(result.added?`方向已保存，收到 ${result.added} 篇论文`:'方向已保存');
+  }catch(e:any){setError(e.message);}finally{setBusy('');}
+ }
+ async function remove(){
+  setBusy('delete');
+  try{await api('/subscriptions/'+active,'DELETE');await onSaved();select();notify('研究方向已删除，论文仍保留');}
+  catch(e:any){setError(e.message);}finally{setBusy('');}
+ }
+
+ const manual=mode==='manual';
+ const staleDescription=!manual&&description!==generatedFor;
+ const staleQuery=query!==validatedQuery;
+ const canSave=name.trim()&&query.trim()&&!staleDescription&&!staleQuery&&!plan?.warnings.length;
+ const queryField=<>
+  <label className="field">PubMed 检索式
+   <textarea aria-label="PubMed 检索式" disabled={!!busy} value={query} maxLength={5000} onChange={e=>editQuery(e.target.value)}/>
+  </label>
+  <button className="button secondary small" disabled={!!busy||!query.trim()} onClick={preview}>
+   {busy==='preview'?<LoaderCircle className="spin" size={14}/>:<Search size={14}/>}验证检索式
+  </button>
+  {plan&&<p className="query-translation">PubMed 实际检索 · {plan.translation}</p>}
+ </>;
+
+ return <div className="topics-layout">
+  <aside className="topics-sidebar">
+   <button className="button primary add-topic" onClick={()=>select()} disabled={!!busy}><Plus size={16}/>新建研究方向</button>
+   {state.subscriptions.map(topic=><button key={topic.id} className={'topic-editor-item '+(active===topic.id?'active':'')} onClick={()=>select(topic)} disabled={!!busy}>
+    <i style={{background:topic.color}}/><span>{topic.name}<small>{topic.enabled?'订阅中':'已暂停'} · {state.topic_counts.find(x=>x.id===topic.id)?.total||0} 篇</small></span><ChevronRight size={14}/>
+   </button>)}
+  </aside>
+  <div className="topic-editor">
+   <div className="settings-section-title"><h3>{active==='new'?'添加研究方向':'编辑研究方向'}</h3></div>
+   <div className="segmented topic-mode" role="group" aria-label="检索式录入方式">
+    <button type="button" disabled={!!busy||!state.ai.configured} aria-pressed={!manual} className={!manual?'active':''} onClick={()=>setMode('ai')}>AI 生成</button>
+    <button type="button" disabled={!!busy} aria-pressed={manual} className={manual?'active':''} onClick={()=>setMode('manual')}>手动输入</button>
+   </div>
+   {!manual&&<>
+    <label className="field">我想关注什么研究？
+     <textarea className="research-description" aria-label="研究方向描述" disabled={!!busy} value={description} onChange={e=>setDescription(e.target.value)} maxLength={3000} placeholder="例如，我想追踪成人高血压的家庭监测和远程管理研究。"/>
+    </label>
+    <div className="generate-row"><button className="button primary" onClick={generate} disabled={!!busy||description.trim().length<4}>{busy==='generate'?<LoaderCircle className="spin" size={16}/>:<Sparkles size={16}/>}生成检索方案</button>
+     {busy==='generate'&&<span>正在生成并向 PubMed 验证…</span>}
+    </div>
+   </>}
+   {(manual||query)&&<div className="query-plan">
+    {plan&&<div className="query-plan-heading"><span><Search size={16}/>检索方案</span><strong>全库匹配 {plan.count.toLocaleString()} 篇</strong></div>}
+    <label className="field">方向名称<input aria-label="方向名称" disabled={!!busy} value={name} maxLength={40} onChange={e=>setName(e.target.value)}/></label>
+    {!manual&&<>
+     {explanation&&<p className="query-explanation">{explanation}</p>}
+     {plan?.concepts.map((concept,i)=><div className="concept-row" key={i}><strong>{concept.name}</strong><div>{concept.terms.map((term,j)=><span key={j}>{term}</span>)}</div></div>)}
+     {plan?.scope_notes.map((note,i)=><p className="scope-note" key={i}>{note}</p>)}
+    </>}
+    {manual?<div className="manual-query">{queryField}</div>:<details className="query-details"><summary>查看和编辑 PubMed 检索式</summary>{queryField}</details>}
+    {!!plan?.warnings.length&&<div className="query-warnings"><strong>存在未被识别的检索词，请调整并重新验证后保存</strong>{plan.warnings.map((warning,i)=><p key={i}>{warning}</p>)}</div>}
+    <div className="topic-options">
+     <div>标签颜色<div className="color-choices">{['#3b6cf4','#8057d9','#d05d91','#d88c2b','#29978a','#67758b'].map(choice=><button key={choice} aria-label={'标签颜色 '+choice} aria-pressed={color===choice} className={color===choice?'selected':''} style={{background:choice}} disabled={!!busy} onClick={()=>setColor(choice)}>{color===choice&&<Check size={12}/>}</button>)}</div></div>
+     <label className="inline-checkbox"><input type="checkbox" checked={enabled} disabled={!!busy} onChange={e=>setEnabled(e.target.checked)}/>启用每日订阅</label>
+    </div>
+   </div>}
+   {staleDescription&&query&&<p className="field-warning">研究方向已修改，请重新生成检索方案后保存。</p>}
+   {staleQuery&&<p className="field-warning">检索式已修改，请先验证。</p>}
+   {error&&<div className="error-message" role="alert"><AlertCircle size={17}/>{error}</div>}
+   <div className="topic-editor-footer">
+    {active!=='new'?<button className="text-button danger" disabled={!!busy} onClick={()=>setDeleting(true)}><Trash2 size={14}/>删除方向</button>:<span/>}
+    <button className="button primary" disabled={!!busy||!canSave} onClick={save}>{busy==='save'?<LoaderCircle className="spin" size={16}/>:<Check size={16}/>}保存研究方向</button>
+   </div>
+   {deleting&&<div className="delete-confirm"><p>删除这个方向及其标签关联？已收取的论文和笔记会保留。</p><button className="button secondary small" onClick={()=>setDeleting(false)}>取消</button><button className="button danger-button small" disabled={!!busy} onClick={remove}>确认删除</button></div>}
+  </div>
+ </div>;
 }

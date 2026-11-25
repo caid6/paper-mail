@@ -8,7 +8,7 @@ const rows=db.prepare(`select p.id,p.title,p.abstract,s.id as topic_id,s.name as
 db.close();
 const groups=[];for(let i=0;i<rows.length;i+=2)groups.push(rows.slice(i,i+2));
 const schema={type:'object',additionalProperties:false,properties:{reviews:{type:'array',items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},topic_id:{type:'string'},verdict:{type:'string',enum:['relevant','borderline','irrelevant']},reason:{type:'string'},evidence:{type:'string'}},required:['id','topic_id','verdict','reason','evidence']}}},required:['reviews']};
-const instruction='你是医学人工智能文献质控员。判断每篇论文是否真正属于给定研究方向，而不是仅在背景、讨论、展望、致谢或参考文献中顺带提及相关词。relevant：该方向是论文的核心研究对象、方法、系统或主要综述主题；borderline：相关技术只占重要的一部分，或摘要不足以确认核心性；irrelevant：研究核心明显是普通医学、药物、生物学或其他主题，方向词只是偶然出现。只依据标题和作者摘要，不推测全文。reason 用中文说明判断依据；evidence 摘录标题或摘要中的关键短语，不能编造。';
+const instruction='按用户给定的研究方向复核 PubMed 论文。仅在背景、讨论、展望、致谢或参考文献中顺带提及相关词，不构成核心相关。relevant：该方向是论文的核心研究对象、方法、系统或主要综述主题；borderline：该方向只涉及研究的重要部分，或摘要不足以确认核心性；irrelevant：研究核心与给定方向无关。只依据标题和作者摘要，不推测全文。reason 用中文说明判断依据；evidence 摘录标题或摘要中的关键短语，不能编造。';
 const base=(process.env.AI_BASE_URL||'').replace(/\/+$/,'');const model=process.env.AI_MODEL;const key=process.env.AI_API_KEY;
 async function classify(batch,attempt=0){
  const input=batch.map(r=>({id:r.id,topic_id:r.topic_id,topic_name:r.topic_name,topic_description:r.description||'',title:r.title,abstract:(r.abstract||'').slice(0,7000)}));

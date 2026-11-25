@@ -6,7 +6,8 @@ import {createHash} from 'node:crypto';
 import {mkdtempSync,mkdirSync,writeFileSync,readFileSync,symlinkSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {connect,setSetting,upsertPaper,type DB} from '../server/core.ts';
+import {setSetting,upsertPaper,type DB} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {queueReadingPreparation,prepareReading,readingPreparationStats} from '../server/reading-preparation.ts';
 import {documentState,pumpDocumentIndexes} from '../server/documents.ts';
 import {figureState,indexPDFFigures,pumpPublisherFigures,pumpFigures,pumpFulltexts,imageMimeType} from '../server/figures.ts';
@@ -23,7 +24,7 @@ const pdfURL='https://pmc-oa-opendata.s3.amazonaws.com/PMC777.2/PMC777.2.pdf';
 const manifest={pmcid:'PMC777',pmid:777,version:2,xml_url:xmlURL,pdf_url:pdfURL,media_urls:[imageURL]};
 function fixture(){
  const db=connect(':memory:');setSetting(db,'min_impact_factor','10');setSetting(db,'quality_enabled','false');
- upsertPaper(db,paper,'medical-ai');db.prepare('UPDATE papers SET impact_factor=15').run();
+ upsertPaper(db,paper,'topic-a');db.prepare('UPDATE papers SET impact_factor=15').run();
  return db;
 }
 async function until(check:()=>boolean){
@@ -35,11 +36,11 @@ test('后台准备按邮箱、影响因子和质控状态派发，跨方向去�
  process.env.AI_API_KEY='test';process.env.AI_MODEL='test-text';
  try{
   for(const [id,fields] of [['778',{archived:1}],['779',{in_library:0}],['780',{impact_factor:9}],['781',{}]] as const){
-   upsertPaper(db,{...paper,id:'pmid:'+id},'medical-ai');
+   upsertPaper(db,{...paper,id:'pmid:'+id},'topic-a');
    db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run('pmid:'+id);
    for(const [key,value] of Object.entries(fields))db.prepare('UPDATE papers SET '+key+'=? WHERE id=?').run(value,'pmid:'+id);
   }
-  upsertPaper(db,paper,'medical-foundation');
+  upsertPaper(db,paper,'topic-b');
   db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run(paper.id);
   setSetting(db,'quality_enabled','true');queueReadingPreparation(db);
   assert.equal(db.prepare('SELECT COUNT(*) n FROM downloads').get()!.n,0);
@@ -65,7 +66,7 @@ test('Nature DOI 图表队列核对文章和图像并自动完成所选视觉模
  const envKeys=['AI_API_KEY','AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL'] as const;
  const originalEnv=Object.fromEntries(envKeys.map(key=>[key,process.env[key]]));
  Object.assign(process.env,{AI_API_KEY:'test',AI_PROVIDER:'compatible',AI_BASE_URL:'https://model.example/v1',AI_MODEL:'test-text',AI_FIGURE_MODEL:'test-vision'});
- upsertPaper(db,{...paper,id:'pmid:880',doi:'10.1038/test-2026-1',pmcid:'',journal:'Nature Medicine'},'medical-ai');
+ upsertPaper(db,{...paper,id:'pmid:880',doi:'10.1038/test-2026-1',pmcid:'',journal:'Nature Medicine'},'topic-a');
  db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run('pmid:880');
  const html='<html><head><meta name="citation_doi" content="10.1038/test-2026-1"><link rel="canonical" href="https://www.nature.com/articles/test-2026-1"></head><body><article><p>The external validation results are shown in <a href="#Fig1">Fig. 1</a>.</p><figure><figcaption><b id="Fig1" data-test="figure-caption-text">Fig. 1: External validation results.</b></figcaption><img src="//media.springernature.com/m312/springer-static/image/art%3A10.1038%2Ftest%2FFig1.png"></figure></article></body></html>';
  const requests:string[]=[];
@@ -106,7 +107,7 @@ test('出版社只开放部分主图时，用 PDF 按图注补齐缺失编号并
  </article></body></html>`;
  Object.assign(process.env,{AI_API_KEY:'test',AI_PROVIDER:'compatible',AI_BASE_URL:'https://model.example/v1',AI_MODEL:'test-text',AI_FIGURE_MODEL:'test-vision'});
  try{
-  upsertPaper(db,{...paper,id,doi,pmcid:''},'medical-ai');
+  upsertPaper(db,{...paper,id,doi,pmcid:''},'topic-a');
   db.prepare('UPDATE papers SET impact_factor=15 WHERE id=?').run(id);
   mkdirSync(path.join(root,'scripts'));
   symlinkSync(path.resolve('scripts/extract_pdf_figures.py'),path.join(root,'scripts','extract_pdf_figures.py'));
@@ -211,7 +212,7 @@ test('服务重启恢复未完成任务，保留下载失败与持久化解析�
  const root=mkdtempSync(path.join(tmpdir(),'paper-preparation-resume-')),file=path.join(root,'state.sqlite');
  let db:DB=connect(file);
  try{
-  upsertPaper(db,paper,'medical-ai');
+  upsertPaper(db,paper,'topic-a');
   db.prepare("INSERT INTO downloads(paper_id,status,automatic,index_error,created_at) VALUES(?,'running',1,'parse error','now')").run(paper.id);
   db.prepare("INSERT INTO fulltexts(paper_id,status,automatic) VALUES(?,'loading',1)").run(paper.id);
   db.close();db=connect(file);

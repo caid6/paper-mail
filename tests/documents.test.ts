@@ -5,12 +5,13 @@ import {mkdtempSync,rmSync,symlinkSync,readdirSync,unlinkSync} from 'node:fs';
 import {execFileSync} from 'node:child_process';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {connect,upsertPaper} from '../server/core.ts';
+import {upsertPaper} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {uploadDocument,documentState,ensureDocument,chatHistory,askDocument} from '../server/documents.ts';
 
 const paper={id:'pmid:777',source:'pubmed',title:'Clinical foundation models',doi:'10.1234/testing',abstract:'Abstract only',authors:[],categories:[],published:'2026-11-20',updated:'2026-11-20',url:'https://pubmed.ncbi.nlm.nih.gov/777/',pdf_url:''};
 function fixture(){
- const db=connect(':memory:');upsertPaper(db,paper,'medical-ai');
+ const db=connect(':memory:');upsertPaper(db,paper,'topic-a');
  db.prepare("INSERT INTO downloads(paper_id,status,created_at) VALUES(?,'needs_browser','now')").run(paper.id);
  const root=mkdtempSync(path.join(tmpdir(),'paper-document-'));symlinkSync(path.resolve('scripts'),path.join(root,'scripts'));
  const bytes=execFileSync(pythonExecutable(),['-c',[

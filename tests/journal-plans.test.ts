@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {expandJournalPlan} from '../server/journal-plans.ts';
 import {resolveJournal} from '../server/journals.ts';
-import {connect,upsertPaper} from '../server/core.ts';
+import {upsertPaper} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {figureState} from '../server/figures.ts';
 
 test('journal plan expands publisher groups and subject quartiles, then applies exclusions by ISSN',()=>{
@@ -25,7 +26,7 @@ test('journal plan expands publisher groups and subject quartiles, then applies 
 test('a downloaded publisher PDF without PMCID has a distinct figure status',()=>{
  const db=connect(':memory:');
  try{
-  upsertPaper(db,{id:'pmid:1',title:'Clinical study',journal:'Nature Medicine',abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/1/',pdf_url:''},'medical-ai');
+  upsertPaper(db,{id:'pmid:1',title:'Clinical study',journal:'Nature Medicine',abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/1/',pdf_url:''},'topic-a');
   db.prepare("INSERT INTO downloads(paper_id,status,source,created_at) VALUES('pmid:1','ready','publisher-article-pdf','now')").run();
   const state=figureState(db,'pmid:1');
   assert.equal(state.status,'pdf_pending');

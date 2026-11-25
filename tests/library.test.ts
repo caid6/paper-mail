@@ -3,9 +3,10 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {connect,upsertPaper} from '../server/core.ts';
+import {upsertPaper} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {getPaper,listPapers,listSchema,mailboxCounts,recordQualityRemoval,saveSubscription,setArchive} from '../server/library.ts';
-function library(){const db=connect(':memory:');for(let i=1;i<=37;i++)upsertPaper(db,{id:'pmid:'+i,title:'Clinical model '+i,abstract:'Study abstract',authors:['Author'],categories:[],published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+i,pdf_url:'',source:'pubmed',journal:i%2?'Journal A':'Journal B'},'medical-ai');return db;}
+function library(){const db=connect(':memory:');for(let i=1;i<=37;i++)upsertPaper(db,{id:'pmid:'+i,title:'Clinical model '+i,abstract:'Study abstract',authors:['Author'],categories:[],published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+i,pdf_url:'',source:'pubmed',journal:i%2?'Journal A':'Journal B'},'topic-a');return db;}
 test('分页覆盖所有论文且页面不重复，列表只返回必要字段',()=>{const db=library();const ids:string[]=[];for(let page=1;page<=3;page++){const r=listPapers(db,listSchema.parse({page,page_size:15}));assert.equal(r.total,37);assert.equal(r.pages,3);assert.equal(r.items.length,page===3?7:15);assert.equal('abstract' in r.items[0],false);ids.push(...r.items.map(x=>String(x.id)));}assert.equal(new Set(ids).size,37);assert.equal(listPapers(db,listSchema.parse({page:100,page_size:15})).page,3);db.close();});
 test('默认按收信时间排序并显示 50 篇，旧排序参数不会改变顺序',()=>{
  const defaults=listSchema.parse({});
@@ -45,7 +46,7 @@ test('旧数据库归档历史保留，来源未记录的论文仍可恢复',()=
  try{
   const prior=connect(file);
   try{
-   upsertPaper(prior,{id:'pmid:1',title:'Existing paper',abstract:'Abstract',authors:[],published:'2026-11-18',updated:'2026-11-18',categories:[],url:'',pdf_url:'',source:'pubmed'},'medical-ai');
+   upsertPaper(prior,{id:'pmid:1',title:'Existing paper',abstract:'Abstract',authors:[],published:'2026-11-18',updated:'2026-11-18',categories:[],url:'',pdf_url:'',source:'pubmed'},'topic-a');
    prior.exec("ALTER TABLE papers DROP COLUMN archive_origin; UPDATE papers SET archived=1, note='旧笔记' WHERE id='pmid:1'");
   }finally{prior.close();}
   const db=connect(file);

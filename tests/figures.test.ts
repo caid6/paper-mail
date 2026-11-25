@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtempSync,rmSync,readFileSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import path from 'node:path';
-import {connect,upsertPaper} from '../server/core.ts';
+import {upsertPaper} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {figureState,indexPublisherFigures,parseNatureFigures,parsePMC} from '../server/figures.ts';
 const html=`<html><head><meta name="citation_pmid" content="123"><link rel="canonical" href="https://pmc.ncbi.nlm.nih.gov/articles/PMC123/"><meta name="citation_pdf_url" content="https://pmc.ncbi.nlm.nih.gov/articles/PMC123/pdf/paper.pdf"></head><body><article><section class="main-article-body"><p>The external validation is shown in <a href="#F1">Figure 1</a>.</p><figure id="F1"><h3 class="obj_head">Figure 1.</h3><img class="graphic" src="https://cdn.ncbi.nlm.nih.gov/pmc/figure.webp" alt="ROC curves"><figcaption>External cohort ROC curves.</figcaption></figure><figure id="F2"><h3 class="obj_head">Figure 2.</h3><img class="graphic" src="https://cdn.ncbi.nlm.nih.gov/pmc/figure2.webp"><figcaption>Study design.</figcaption></figure><section class="supplementary-material"><figure id="S1"><img class="graphic" src="supp.webp"></figure></section></section><a href="https://creativecommons.org/licenses/by/4.0/">CC BY</a></article></body></html>`;
 test('提取全部正文主图，排除补充图，保留图注与正文引用段落',()=>{const r=parsePMC(html,'PMC123','123');assert.equal(r.figures.length,2);assert.equal(r.figures[0].label,'Figure 1.');assert.equal(r.figures[0].caption,'External cohort ROC curves.');assert.equal(r.figures[0].context,'The external validation is shown in Figure 1.');assert.equal(r.figures[1].context,'');assert.equal(r.pdf_url,'https://pmc.ncbi.nlm.nih.gov/articles/PMC123/pdf/paper.pdf');assert.match(r.license,/CC BY/);});
@@ -22,7 +23,7 @@ test('Nature publisher figure is DOI-verified, cached locally, and stored as a s
  const html='<html><head><meta name="citation_doi" content="10.1038/test-2026-1"><link rel="canonical" href="https://www.nature.com/articles/test-2026-1"></head><body><article><p>The results appear in <a href="#Fig1">Fig. 1</a>.</p><figure><figcaption><b id="Fig1" data-test="figure-caption-text">Fig. 1: Validation results.</b></figcaption><img src="//media.springernature.com/m312/springer-static/image/art%3A10.1038%2Ftest%2FFig1.png"></figure></article></body></html>';
  const png=Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAEAAAAAgCAIAAAAt/+nTAAAAOElEQVR4nO3PsQkAAAzDsPz/dHpFliLwbFCaTBvvu94DAAAAAAAAAAAAAAAAAAAAAAAAAAAAPAQcOkv4asq/aw0AAAAASUVORK5CYII=','base64');
  try{
-  upsertPaper(db,paper,'medical-ai');
+  upsertPaper(db,paper,'topic-a');
   globalThis.fetch=async(url)=>{
    if(String(url)==='https://www.nature.com/articles/test-2026-1'){
     const response=new Response(html);Object.defineProperty(response,'url',{value:'https://www.nature.com/articles/test-2026-1'});return response;

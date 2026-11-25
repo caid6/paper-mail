@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {matchJournal,journalRestriction,eligibleJournalIssns,journalInfo,resolveJournal,categoryJournals,journalFilter,passesJournal} from '../server/journals.ts';
-import {connect,upsertPaper,setSetting} from '../server/core.ts';
+import {upsertPaper,setSetting} from '../server/core.ts';
+import {connectTestLibrary as connect} from './helpers/library.ts';
 import {listPapers,listSchema,topicCounts} from '../server/library.ts';
 import {validateSearchErrors,prepareJournalSearch,fetchPubmed} from '../server/pubmed.ts';
 test('ISSN wins over title, corrections apply, missing/ambiguous journal remains unknown',()=>{
@@ -40,9 +41,9 @@ test('large journal sets use NCBI History and preserve every journal and the res
  }finally{globalThis.fetch=original;}
 });
 test('threshold is inclusive, hides unknown journals, applies before pagination and keeps private data',()=>{
- const db=connect(':memory:');for(const [id,journal] of [['1','Nature Medicine'],['2','Journal of medical Internet research'],['3','Unknown journal']])upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'medical-ai');
+ const db=connect(':memory:');for(const [id,journal] of [['1','Nature Medicine'],['2','Journal of medical Internet research'],['3','Unknown journal']])upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'topic-a');
  db.prepare("UPDATE papers SET note='my note',starred=1,is_read=1 WHERE id='pmid:2'").run();
- setSetting(db,'min_impact_factor','10');assert.equal(listPapers(db,listSchema.parse({})).total,1);assert.equal(topicCounts(db).find((x:any)=>x.id==='medical-ai')!.total,1);
+ setSetting(db,'min_impact_factor','10');assert.equal(listPapers(db,listSchema.parse({})).total,1);assert.equal(topicCounts(db).find((x:any)=>x.id==='topic-a')!.total,1);
  setSetting(db,'min_impact_factor','52.3');assert.equal(listPapers(db,listSchema.parse({})).total,1);
  setSetting(db,'min_impact_factor','52.4');assert.equal(listPapers(db,listSchema.parse({})).total,0);
  setSetting(db,'min_impact_factor','');assert.equal(listPapers(db,listSchema.parse({})).total,3);assert.equal(db.prepare("SELECT note FROM papers WHERE id='pmid:2'").get()!.note,'my note');db.close();
@@ -61,13 +62,13 @@ test('confirmed journals intersect with the IF threshold in stored papers and Pu
  const db=connect(':memory:');
  try{
   for(const [id,journal] of [['1','Nature Medicine'],['2','Nature Biotechnology'],['3','LANCET']]){
-   upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'medical-ai');
+   upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'topic-a');
   }
   const ids=[resolveJournal('Nature Medicine')!,resolveJournal('Nature Biotechnology')!];
   setSetting(db,'journal_filter_ids',JSON.stringify(ids));
   setSetting(db,'min_impact_factor','50');
   assert.deepEqual(listPapers(db,listSchema.parse({})).items.map(p=>p.id),['pmid:1']);
-  assert.equal(topicCounts(db).find(x=>x.id==='medical-ai')!.total,1);
+  assert.equal(topicCounts(db).find(x=>x.id==='topic-a')!.total,1);
   assert.deepEqual(eligibleJournalIssns(50,ids).sort(),['1078-8956','1546-170X']);
   assert.equal((await prepareJournalSearch(100,ids)).empty,true);
   setSetting(db,'min_impact_factor','');
@@ -83,7 +84,7 @@ test('strict minimum excludes a journal rated exactly 10 from the inbox and NCBI
  try{
   const ids=['Journal of Infection','Nature Medicine'].map(name=>resolveJournal(name)!);
   for(const [id,journal] of [['1','Journal of Infection'],['2','Nature Medicine']]){
-   upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'medical-ai');
+   upsertPaper(db,{id:'pmid:'+id,title:'Clinical study',journal,abstract:'Evidence',authors:[],categories:[],source:'pubmed',published:'2026-11-18',updated:'2026-11-18',url:'https://pubmed.ncbi.nlm.nih.gov/'+id,pdf_url:''},'topic-a');
   }
   setSetting(db,'journal_filter_ids',JSON.stringify(ids));
   setSetting(db,'min_impact_factor','10');
