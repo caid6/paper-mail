@@ -26,7 +26,15 @@ export function downloadInfo(){
   note:pdfReady?'已启用公开 PDF 下载。遇到需要登录的原文时，可在浏览器打开或上传 PDF。':'PDF 环境未就绪。请在项目目录运行 npm run setup:python，再重启 Paper-mail。'
  };
 }
-export function downloadState(db:DB,paperId:string){const r:any=db.prepare('SELECT * FROM downloads WHERE paper_id=?').get(paperId);if(!r)return {status:'idle',file_url:null,attempts:[]};let attempts=[];try{attempts=JSON.parse(r.attempts||'[]');}catch{}const {file_name:_fileName,source_url:_sourceUrl,attempts:_attempts,index_error:_indexError,automatic:_automatic,...visible}=r;return {...visible,attempts,file_url:r.status==='ready'?'/api/papers/'+encodeURIComponent(paperId)+'/pdf':null};}
+export function downloadState(db:DB,paperId:string){
+ const row=db.prepare('SELECT * FROM downloads WHERE paper_id=?').get(paperId);
+ const available=downloadInfo().available;
+ if(!row)return {status:available?'idle':'environment_required',file_url:null,attempts:[]};
+ let attempts=[];try{attempts=JSON.parse(String(row.attempts||'[]'));}catch{}
+ const {file_name,source_url,index_error,automatic, status, ...visible}=row;
+ return {...visible,status:status==='pending'&&!available?'environment_required':String(status),attempts,
+  file_url:status==='ready'?'/api/papers/'+encodeURIComponent(paperId)+'/pdf':null};
+}
 function runBridge(root:string,input:unknown):Promise<any>{return new Promise((resolve,reject)=>{
  const child=spawn(pythonExecutable(),[path.join(root,'scripts','download_bridge.py')],{stdio:['pipe','pipe','pipe']});let output='';let expired=false;
  const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},240000);
@@ -43,7 +51,7 @@ export function requestDownload(db:DB,id:string){
  return downloadState(db,id);
 }
 export async function pumpDownloads(db:DB,root:string,onReady?:()=>void){
- if(working.has(db))return;
+ if(working.has(db)||!downloadInfo().available)return;
  working.add(db);
  try{for(;;){
   const paper=db.prepare(`SELECT p.id,p.title,p.doi,p.pmcid,t.pdf_url AS prepared_pdf FROM downloads d JOIN papers p ON p.id=d.paper_id LEFT JOIN fulltexts t ON t.paper_id=p.id
@@ -51,10 +59,6 @@ export async function pumpDownloads(db:DB,root:string,onReady?:()=>void){
     ORDER BY p.received_at DESC,p.published DESC,p.id DESC LIMIT 1`).get();
   if(!paper)break;
   const id=String(paper.id);
-  if(!downloadInfo().available){
-   db.prepare("UPDATE downloads SET status='unavailable',error=?,completed_at=? WHERE paper_id=?").run(downloadInfo().note,new Date().toISOString(),id);
-   continue;
-  }
   db.prepare("UPDATE downloads SET status='running' WHERE paper_id=?").run(id);
   try{
    const dir=path.join(root,'data','downloads',id.replace('pmid:',''));mkdirSync(dir,{recursive:true});

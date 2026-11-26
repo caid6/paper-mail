@@ -13,6 +13,7 @@ import {documentState,pumpDocumentIndexes} from '../server/documents.ts';
 import {figureState,indexPDFFigures,pumpPublisherFigures,pumpFigures,pumpFulltexts,imageMimeType} from '../server/figures.ts';
 import {cloudURL,parsePMCXML,fetchPMC} from '../server/pmc.ts';
 import {pumpDownloads} from '../server/downloads.ts';
+import {getPaper,listPapers,listSchema,qualityStats} from '../server/library.ts';
 
 const paper={id:'pmid:777',source:'pubmed',title:'Clinical foundation models',doi:'10.1234/testing',pmcid:'PMC777',abstract:'Study abstract',authors:[],categories:[],published:'2026-11-20',updated:'2026-11-20',url:'https://pubmed.ncbi.nlm.nih.gov/777/',pdf_url:''};
 const figureXML=`<article><front><article-meta><article-id pub-id-type="pmid">777</article-id><article-id pub-id-type="pmcid">PMC777</article-id><article-id pub-id-type="pmcid-ver">PMC777.2</article-id><permissions>CC BY 4.0</permissions></article-meta></front><body><p>External validation in <xref ref-type="fig" rid="F1 F2">Figures 1 and 2</xref>.</p><fig id="F1"><label>Figure 1</label><caption><p>External validation results.</p></caption><graphic xlink:href="figure.webp"/></fig><supplementary-material><fig id="S1"/></supplementary-material></body></article>`;
@@ -31,6 +32,68 @@ async function until(check:()=>boolean){
  const end=Date.now()+8000;
  while(!check()){if(Date.now()>end)assert.fail('后台任务未在测试时限内完成');await new Promise(resolve=>setTimeout(resolve,10));}
 }
+test('无模型时缓存 PMC 主图，待配置任务退出进度统计，配置后恢复解读',async()=>{
+ const db=fixture(),root=mkdtempSync(path.join(tmpdir(),'paper-model-wait-'));
+ const oldFetch=globalThis.fetch;
+ const keys=['AI_API_KEY','GEMINI_API_KEY','AI_PROVIDER','AI_BASE_URL','AI_MODEL','AI_FIGURE_MODEL'] as const;
+ const previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+ try{
+  for(const key of keys)delete process.env[key];
+  setSetting(db,'quality_enabled','true');
+  assert.equal(qualityStats(db).status,'unconfigured');
+  assert.equal(qualityStats(db).pending,0);
+  assert.equal(getPaper(db,paper.id)?.digest_status,'unconfigured');
+  assert.equal(listPapers(db,listSchema.parse({})).items[0].title_status,'unconfigured');
+  assert.equal(getPaper(db,paper.id)?.quality_reviews[0].status,'unconfigured');
+  setSetting(db,'quality_enabled','false');
+  assert.equal(qualityStats(db).status,'paused');
+  assert.equal(getPaper(db,paper.id)?.quality_reviews[0].status,'paused');
+  db.prepare("INSERT INTO figures(id,paper_id,position,label,caption,context,image_url,source_url) VALUES(?,?,1,'Figure 1','Study design','',?,'https://pmc.ncbi.nlm.nih.gov/articles/PMC777/')").run('one',paper.id,imageURL);
+  let modelCalls=0,imageCalls=0;
+  globalThis.fetch=async input=>{
+   if(String(input)===imageURL){imageCalls++;return new Response(image);}
+   assert.match(String(input),/^https:\/\/model\.example\//);modelCalls++;
+   return Response.json({choices:[{finish_reason:'stop',message:{content:JSON.stringify({title_zh:'研究设计',overview:'观察研究流程。',panels:[],takeaway:'展示研究流程。',caveats:['图示仅说明流程。']})}}]});
+  };
+  assert.equal(readingPreparationStats(db).downloading,1);
+  await pumpFigures(db,root);
+  assert.equal(figureState(db,paper.id).figures[0].status,'unconfigured');
+  assert.ok(figureState(db,paper.id).figures[0].image_src);
+  assert.equal(readingPreparationStats(db).waiting_for_model,1);
+  assert.equal(readingPreparationStats(db).pending,0);
+  assert.equal(modelCalls,0);
+  assert.equal(imageCalls,1);
+  Object.assign(process.env,{AI_API_KEY:'test',AI_PROVIDER:'compatible',AI_BASE_URL:'https://model.example/v1',AI_MODEL:'text',AI_FIGURE_MODEL:'vision'});
+  assert.equal(getPaper(db,paper.id)?.digest_status,'pending');
+  assert.equal(readingPreparationStats(db).analyzing,1);
+  await pumpFigures(db,root);
+  assert.equal(figureState(db,paper.id).figures[0].status,'ready');
+  assert.equal(readingPreparationStats(db).pending,0);
+  assert.equal(modelCalls,1);
+  assert.equal(imageCalls,1);
+ }finally{
+  for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}
+  globalThis.fetch=oldFetch;db.close();rmSync(root,{recursive:true,force:true});
+ }
+});
+
+test('PDF 环境修复前暂挂下载任务，保留队列和 PubMed 原文摘要',async()=>{
+ const db=fixture(),root=mkdtempSync(path.join(tmpdir(),'paper-pdf-wait-'));
+ const previous=process.env.PAPER_DOWNLOAD_PYTHON;
+ try{
+  process.env.PAPER_DOWNLOAD_PYTHON=path.join(root,'missing-python');
+  queueReadingPreparation(db);
+  await pumpDownloads(db,root);
+  assert.equal(documentState(db,root,paper.id).download.status,'environment_required');
+  assert.equal(getPaper(db,paper.id)?.abstract,paper.abstract);
+  assert.equal(db.prepare('SELECT status FROM downloads WHERE paper_id=?').get(paper.id)?.status,'pending');
+  db.prepare("UPDATE fulltexts SET status='unavailable' WHERE paper_id=?").run(paper.id);
+  assert.equal(readingPreparationStats(db).pending,0);
+ }finally{
+  if(previous===undefined)delete process.env.PAPER_DOWNLOAD_PYTHON;else process.env.PAPER_DOWNLOAD_PYTHON=previous;
+  db.close();rmSync(root,{recursive:true,force:true});
+ }
+});
 test('后台准备按邮箱、影响因子和质控状态派发，跨方向去重且保留终态',()=>{
  const db=fixture();const oldKey=process.env.AI_API_KEY;const oldModel=process.env.AI_MODEL;
  process.env.AI_API_KEY='test';process.env.AI_MODEL='test-text';

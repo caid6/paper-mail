@@ -1,8 +1,8 @@
 import {aiConfigured} from './ai.ts';
 import type {DB} from './core.ts';
-import {downloadedPath,pumpDownloads} from './downloads.ts';
+import {downloadedPath,downloadInfo,pumpDownloads} from './downloads.ts';
 import {markMissingDownload,pumpDocumentIndexes} from './documents.ts';
-import {pumpPublisherFigures,pumpPDFFigureIndexes,pumpFigures,pumpFulltexts} from './figures.ts';
+import {pumpPublisherFigures,pumpPDFFigureIndexes,pumpFigures,pumpFulltexts,needsPDFFigureIndex} from './figures.ts';
 import {readingScope} from './reading-scope.ts';
 
 export function queueReadingPreparation(db:DB){
@@ -35,19 +35,26 @@ export function prepareReading(db:DB,root:string){
 
 export function readingPreparationStats(db:DB){
  const scope=readingScope(db);
- return db.prepare(`SELECT COUNT(*) AS pending FROM papers p
-   LEFT JOIN downloads d ON d.paper_id=p.id LEFT JOIN pdf_documents pdf ON pdf.paper_id=p.id
-   LEFT JOIN fulltexts t ON t.paper_id=p.id
-   WHERE (${scope}) AND (d.status IN ('pending','running')
-     OR (d.status='ready' AND d.index_error IS NULL AND (pdf.file_name IS NULL OR pdf.file_name<>d.file_name))
-     OR t.status IN ('pending','loading')
-     OR EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND
-       (f.status='generating' OR (f.status='pending' AND (? OR f.image_path=''))))
-     OR EXISTS(SELECT 1 FROM pdf_figure_indexes pf JOIN pdf_documents pd ON pd.paper_id=pf.paper_id
-       WHERE pf.paper_id=p.id AND pf.sha256=pd.sha256 AND pf.status='processing')
-     OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status='processing')
-     OR EXISTS(SELECT 1 FROM downloads d JOIN pdf_documents pd ON pd.paper_id=d.paper_id LEFT JOIN pdf_figure_indexes pf ON pf.paper_id=pd.paper_id
-       WHERE d.paper_id=p.id AND d.status='ready' AND pd.file_name=d.file_name
-         AND (pf.paper_id IS NULL OR pf.sha256<>pd.sha256 OR pf.status='pending')
-         AND (p.doi NOT LIKE '10.1038/%' OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status IN ('no_figures','error')))))`).get(Number(aiConfigured()));
+ return db.prepare(`WITH stages AS (
+   SELECT
+     (d.status='running' OR (:pdfReady AND d.status='pending') OR t.status IN ('pending','loading')
+       OR EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.image_path='' AND f.status IN ('pending','fetching'))) AS downloading,
+     (:pdfReady AND d.status='ready' AND (
+       (d.index_error IS NULL AND (pd.file_name IS NULL OR pd.file_name<>d.file_name))
+       OR (pd.file_name=d.file_name AND (pf.status='processing' OR (${needsPDFFigureIndex})))))
+       OR pi.status='processing'
+       OR (p.doi LIKE '10.1038/%' AND (pi.status='pending' OR pi.paper_id IS NULL OR pi.fingerprint<>lower(p.doi))
+         AND (t.status IS NULL OR t.status NOT IN ('pending','loading'))
+         AND NOT EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.origin='pmc')) AS parsing,
+     EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.image_path<>'' AND f.status IN ('pending','generating')) AS figure_analysis
+   FROM papers p LEFT JOIN downloads d ON d.paper_id=p.id LEFT JOIN pdf_documents pd ON pd.paper_id=p.id
+   LEFT JOIN fulltexts t ON t.paper_id=p.id LEFT JOIN pdf_figure_indexes pf ON pf.paper_id=p.id
+   LEFT JOIN publisher_figure_indexes pi ON pi.paper_id=p.id WHERE ${scope}
+ ) SELECT COUNT(*) FILTER (WHERE downloading OR parsing OR (:modelReady AND figure_analysis)) AS pending,
+   COUNT(*) FILTER (WHERE downloading) AS downloading, COUNT(*) FILTER (WHERE parsing) AS parsing,
+   COUNT(*) FILTER (WHERE :modelReady AND figure_analysis) AS analyzing,
+   COUNT(*) FILTER (WHERE NOT :modelReady AND figure_analysis) AS waiting_for_model FROM stages`)
+  .get({pdfReady:Number(downloadInfo().available),modelReady:Number(aiConfigured())}) as {
+    pending:number;downloading:number;parsing:number;analyzing:number;waiting_for_model:number;
+  };
 }

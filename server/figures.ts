@@ -5,11 +5,11 @@ import {mkdirSync,writeFileSync,readFileSync,mkdtempSync,rmSync} from 'node:fs';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {tmpdir} from 'node:os';
-import {downloadedPath} from './downloads.ts';
+import {downloadedPath,downloadInfo} from './downloads.ts';
 import {z} from 'zod';
 import type {DB} from './core.ts';
 import {getPaper} from './library.ts';
-import {aiConfigured,activeAI,generateFigureAnalysis} from './ai.ts';
+import {aiConfigured,activeAI,generateFigureAnalysis,modelJobStatus} from './ai.ts';
 import {readingScope} from './reading-scope.ts';
 import {fetchPMC,PMCUnavailable} from './pmc.ts';
 export type FigureOrigin='pmc'|'publisher'|'pdf';
@@ -36,30 +36,32 @@ export function parsePMC(html:string,pmcid:string,pmid:string){
  return {figures,source_url:canonical,license:license.length?license.text().trim()+' · '+license.attr('href'):'以原始全文页面标注为准',pdf_url:$('meta[name="citation_pdf_url"]').attr('content')||''};
 }
 export function figureState(db:DB,paperId:string){
+ const configured=aiConfigured();
  const paper=db.prepare('SELECT pmcid,doi FROM papers WHERE id=?').get(paperId);
  const fulltext=db.prepare('SELECT status,error,source_url,license,pdf_url,fetched_at FROM fulltexts WHERE paper_id=?').get(paperId);
- const pdf_available=!!db.prepare("SELECT 1 FROM downloads WHERE paper_id=? AND status='ready'").get(paperId);
+ const download=db.prepare('SELECT status FROM downloads WHERE paper_id=?').get(paperId);
+ const pdf_available=download?.status==='ready';
  const pdfIndex=db.prepare('SELECT status,error,extracted_at FROM pdf_figure_indexes WHERE paper_id=?').get(paperId);
  const publisherIndex=db.prepare('SELECT status,error,fetched_at FROM publisher_figure_indexes WHERE paper_id=?').get(paperId);
  const figures=db.prepare(`SELECT id,position,label,caption,alt,image_url,source_url,status,analysis,error,model,generated_at,image_path,origin,source_page
   FROM figures WHERE paper_id=? ORDER BY position`).all(paperId).map((row:any)=>{
    const {image_path,status,model,...figure}=row;
-   return {...figure,status,model,analysis:figure.analysis?JSON.parse(String(figure.analysis)):null,
+   return {...figure,status:image_path?modelJobStatus(status,configured):status,model,analysis:figure.analysis?JSON.parse(String(figure.analysis)):null,
     image_src:image_path?'/api/figures/'+encodeURIComponent(String(figure.id))+'/image':null};
   });
  const pmcFigures=figures.filter(figure=>figure.origin==='pmc');
  const publisherFigures=figures.filter(figure=>figure.origin==='publisher');
  let status=paper?.pmcid?fulltext?.status||'idle':'no_pmc';
  if(pmcFigures.length||publisherFigures.length||figures.some(figure=>figure.origin==='pdf'))status='ready';
- else if(fulltext?.status==='pending'||fulltext?.status==='loading')status='pending';
+ else if(fulltext?.status==='pending'||fulltext?.status==='loading')status=fulltext.status;
  else if(publisherIndex?.status==='processing')status='publisher_processing';
- else if(publisherIndex?.status==='partial')status=pdf_available?(pdfIndex?.status==='processing'?'pdf_processing':pdfIndex?.status==='no_figures'?'no_figures':'pdf_pending'):'no_figures';
- else if(publisherIndex?.status==='no_figures')status=pdf_available?(pdfIndex?.status==='processing'?'pdf_processing':pdfIndex?.status==='no_figures'?'no_figures':'pdf_pending'):'no_figures';
- else if(publisherIndex?.status==='error')status=pdf_available?(pdfIndex?.status==='processing'?'pdf_processing':pdfIndex?.status==='error'?'pdf_error':pdfIndex?.status==='no_figures'?'no_figures':'pdf_pending'):'publisher_error';
- else if(fulltext?.status==='ready'&&pdfIndex?.status==='error')status='pdf_error';
- else if(fulltext?.status==='ready'&&pdfIndex?.status==='no_figures')status='no_figures';
  else if(pdf_available)status=pdfIndex?.status==='processing'?'pdf_processing':pdfIndex?.status==='error'?'pdf_error':pdfIndex?.status==='no_figures'?'no_figures':'pdf_pending';
- return {...fulltext,status,pdf_available,pdf_index:pdfIndex||null,publisher_index:publisherIndex||null,ai_configured:aiConfigured(),figures};
+ else if(download?.status==='running')status='pdf_downloading';
+ else if(download?.status==='pending')status=downloadInfo().available?'pdf_queued':'pdf_environment_required';
+ else if(publisherIndex?.status==='error')status='publisher_error';
+ else if(publisherIndex?.status==='no_figures'||fulltext?.status==='ready')status='no_figures';
+ if(status==='pdf_pending'&&!downloadInfo().available)status='pdf_environment_required';
+ return {...fulltext,status,pdf_available,pdf_index:pdfIndex||null,publisher_index:publisherIndex||null,ai_configured:configured,figures};
 }
 const figureWorkers=new WeakSet<DB>();
 const fulltextWorkers=new WeakSet<DB>();
@@ -288,18 +290,21 @@ export async function indexPDFFigures(db:DB,root:string,paperId:string,file:stri
  try{await indexPDFFiguresOnce(db,root,paperId,file);}
  finally{active.delete(paperId);}
 }
+export const needsPDFFigureIndex=`(pf.paper_id IS NULL OR pf.sha256<>pd.sha256 OR pf.status='pending')
+  AND NOT EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.origin='pmc')
+  AND (NOT EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.origin='publisher') OR pi.status='partial')
+  AND (p.doi NOT LIKE '10.1038/%' OR pi.status IN ('no_figures','error','partial'))
+  AND NOT EXISTS(SELECT 1 FROM fulltexts t WHERE t.paper_id=p.id AND t.status IN ('pending','loading'))`;
+
 export async function pumpPDFFigureIndexes(db:DB,root:string){
- if(pdfFigureWorkers.has(db))return;
+ if(pdfFigureWorkers.has(db)||!downloadInfo().available)return;
  pdfFigureWorkers.add(db);
  try{for(;;){
   const row:any=db.prepare(`SELECT p.id FROM papers p JOIN downloads d ON d.paper_id=p.id
     JOIN pdf_documents pd ON pd.paper_id=p.id LEFT JOIN pdf_figure_indexes pf ON pf.paper_id=p.id
+    LEFT JOIN publisher_figure_indexes pi ON pi.paper_id=p.id
     WHERE d.status='ready' AND pd.file_name=d.file_name AND (${readingScope(db)})
-      AND (pf.paper_id IS NULL OR pf.sha256<>pd.sha256 OR pf.status='pending')
-      AND NOT EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.origin='pmc' AND f.status IN ('pending','generating'))
-      AND (NOT EXISTS(SELECT 1 FROM figures f WHERE f.paper_id=p.id AND f.origin='publisher') OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status='partial'))
-      AND (p.doi NOT LIKE '10.1038/%' OR EXISTS(SELECT 1 FROM publisher_figure_indexes pi WHERE pi.paper_id=p.id AND pi.status IN ('no_figures','error','partial')))
-      AND NOT EXISTS(SELECT 1 FROM fulltexts t WHERE t.paper_id=p.id AND t.status IN ('pending','loading'))
+      AND (${needsPDFFigureIndex})
     ORDER BY p.received_at DESC,p.published DESC,p.id DESC LIMIT 1`).get();
   if(!row)break;
   const id=String(row.id),file=downloadedPath(db,root,id);
@@ -350,7 +355,6 @@ async function loadFulltext(db:DB,paperId:string,root:string){
  }catch(e:any){db.prepare('UPDATE fulltexts SET status=?,error=? WHERE paper_id=?').run(e instanceof PMCUnavailable?'unavailable':'error',e.message,paperId);}
 }
 export async function pumpFigures(db:DB,root:string){
- if(!aiConfigured())return;
  if(figureWorkers.has(db))return;
  figureWorkers.add(db);
  try{for(;;){
@@ -359,7 +363,7 @@ export async function pumpFigures(db:DB,root:string){
     WHERE f.status='pending' AND (? OR f.image_path='') AND ((${readingScope(db)}) OR (f.origin='pmc' AND t.paper_id IS NOT NULL AND t.automatic=0))
     ORDER BY p.received_at DESC,p.published DESC,p.id DESC,f.position LIMIT 1`).get(Number(aiConfigured()));
   if(!row)break;
-  db.prepare("UPDATE figures SET status='generating',error=NULL WHERE id=?").run(row.id);
+  db.prepare('UPDATE figures SET status=?,error=NULL WHERE id=?').run(row.image_path?'generating':'fetching',row.id);
   try{
    let data:Buffer,type:string;
    if(row.image_path){data=readFileSync(path.join(root,'data','figures',row.image_path));type=row.image_type;}
@@ -369,7 +373,9 @@ export async function pumpFigures(db:DB,root:string){
     type=imageMimeType(data);
     const md5=url.searchParams.get('md5');
     if(md5&&createHash('md5').update(data).digest('hex')!==md5)throw new Error('主图内容校验失败');
-    mkdirSync(path.join(root,'data','figures'),{recursive:true});writeFileSync(path.join(root,'data','figures',row.id),data);db.prepare('UPDATE figures SET image_path=?,image_type=? WHERE id=?').run(row.id,type,row.id);
+    mkdirSync(path.join(root,'data','figures'),{recursive:true});writeFileSync(path.join(root,'data','figures',row.id),data);
+    db.prepare("UPDATE figures SET image_path=?,image_type=?,status='pending' WHERE id=?").run(row.id,type,row.id);
+    continue;
    }
    const paper=getPaper(db,row.paper_id)!;const model=activeAI().figure_model;
    const analysis=await generateFigureAnalysis({...row,source_page:row.source_page||null},paper,{data,type});

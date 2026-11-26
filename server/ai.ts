@@ -16,6 +16,9 @@ export function activeAI():AIConfig{
 export function aiConfigured(config=activeAI()){
  return Boolean(config.key&&config.base_url&&config.model&&config.figure_model);
 }
+export function modelJobStatus<T>(status:T,configured:boolean){
+ return status==='pending'&&!configured?'unconfigured':status;
+}
 export function aiConfig(){
  const config=activeAI();
  const {provider,base_url,model,figure_model}=config;

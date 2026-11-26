@@ -52,8 +52,9 @@ export function documentState(db:DB,root:string,id:string){
  const doc:any=db.prepare('SELECT sha256,file_name,page_count,pages FROM pdf_documents WHERE paper_id=?').get(id);
  const ready=file&&doc&&doc.file_name===path.basename(file);
  const indexError=file?db.prepare('SELECT index_error FROM downloads WHERE paper_id=?').get(id)?.index_error:null;
+ const pdf_environment_ready=downloadInfo().available;
  return {download,document:ready?{status:'ready',sha256:doc.sha256,page_count:doc.page_count,unreadable_pages:(JSON.parse(doc.pages) as DocumentPage[]).filter(p=>!p.text.trim()).map(p=>p.page),file_url:'/api/papers/'+encodeURIComponent(id)+'/pdf?v='+doc.sha256}:
-  {status:indexing.get(db)?.has(id)?'processing':indexError?'error':file?'pending':'missing',error:indexError||null},asking:asking.has(id)};
+  {status:indexing.get(db)?.has(id)?'processing':indexError?'error':file?(pdf_environment_ready?'pending':'environment_required'):'missing',error:indexError||null},asking:asking.has(id),pdf_environment_ready};
 }
 function indexDocument(db:DB,root:string,id:string,file:string,paper:{title:unknown;doi:unknown}){
  let jobs=indexing.get(db);
@@ -71,7 +72,7 @@ export function markMissingDownload(db:DB,id:string){
  db.prepare("UPDATE downloads SET status='interrupted',error='本地 PDF 文件已缺失，请重新上传本篇原文' WHERE paper_id=? AND status='ready'").run(id);
 }
 export async function pumpDocumentIndexes(db:DB,root:string){
- if(indexingWorkers.has(db))return;
+ if(indexingWorkers.has(db)||!downloadInfo().available)return;
  indexingWorkers.add(db);
  try{
   for(;;){
@@ -96,19 +97,16 @@ export async function ensureDocument(db:DB,root:string,id:string){
   return documentState(db,root,id);
  }
  if(current.download.status==='idle'){
-  if(!downloadInfo().available){
-   db.prepare("INSERT INTO downloads(paper_id,status,error,created_at) VALUES(?,'unavailable','本机自动下载器不可用，请上传原文 PDF',?)").run(id,new Date().toISOString());
-   return documentState(db,root,id);
-  }
   requestDownload(db,id);
   return documentState(db,root,id);
  }
  const file=downloadedPath(db,root,id);
- if(!file||['ready','error'].includes(current.document.status))return documentState(db,root,id);
+ if(!file||!current.pdf_environment_ready||['ready','error'].includes(current.document.status))return current;
  void indexDocument(db,root,id,file,paper);
  return documentState(db,root,id);
 }
 export async function uploadDocument(db:DB,root:string,id:string,bytes:Buffer){
+ if(!downloadInfo().available)throw new DocumentError('请先安装 PDF 依赖，再上传原文',409);
  const current=downloadState(db,id);
  if(!uploadStatuses.has(current.status))throw new DocumentError('仅在自动获取未成功后上传 PDF',409);
  if(indexing.get(db)?.has(id)||asking.has(id)||uploading.has(id))throw new DocumentError('本篇文献正在处理，请稍候',409);

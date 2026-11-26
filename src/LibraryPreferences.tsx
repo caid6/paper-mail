@@ -51,7 +51,16 @@ export function LibraryPreferences({state,onSaved,notify}:{state:State;onSaved:(
   <JournalFilterEditor description={description} onDescription={setDescription} selected={selected} onSelection={setSelected}
     threshold={threshold} onThreshold={value=>{setMin(value.value);setOperator(value.operator);setEnabled(true);}} disabled={!!busy||settings.initialize_status==='running'}/>
   <div className="settings-footer library-save"><span>保存后立即应用，已收取论文不删除。</span><button className="button primary" onClick={save} disabled={!!busy||settings.initialize_status==='running'||invalidThreshold}>{busy==='save'?<LoaderCircle size={15} className="spin"/>:<Check size={15}/>}保存筛选条件</button></div>
-  <section className="quality-section" aria-labelledby="quality-title"><div className="settings-section-title"><div><h3 id="quality-title">相关性质量控制</h3><p>按标题、摘要和研究方向复核；边界文献保留，明确无关且没有其他方向标签的文献会从收件箱移出。</p></div></div><div className="quality-summary"><span><strong>{state.quality?.relevant||0}</strong> 核心相关</span><span><strong>{state.quality?.borderline||0}</strong> 边界相关</span><span><strong>{state.quality?.pending||0}</strong> 待质控</span></div><small className="quality-note">统计按论文与研究方向的命中关系计算。</small></section>
+  <section className="quality-section" aria-labelledby="quality-title">
+   <div className="settings-section-title"><div><h3 id="quality-title">相关性质量控制</h3><p>按标题、摘要和研究方向复核。明确无关且没有其他方向标签的论文会从收件箱移出。</p></div></div>
+   <div className="quality-summary">
+    <span><strong>{state.quality.relevant}</strong> 核心相关</span>
+    <span><strong>{state.quality.borderline}</strong> 边界相关</span>
+    {state.quality.status==='enabled'&&<span><strong>{state.quality.pending}</strong> 待质控</span>}
+    {state.quality.failed>0&&<span><strong>{state.quality.failed}</strong> 复核失败</span>}
+   </div>
+   <small className="quality-note">{state.quality.status==='unconfigured'?'在「API 与模型」配置文字模型后开始质控。':state.quality.status==='paused'?'自动质控已暂停。':'统计按论文与研究方向的命中关系计算。'}</small>
+  </section>
   <section className="backfill-section" aria-labelledby="backfill-title"><div className="settings-section-title"><div><h3 id="backfill-title">初始化文献库</h3><p>按选定时间窗重新确定当前收件箱；之后由每日任务继续收取新记录。</p></div><Database size={19}/></div>
    <div className="model-fields"><label className="field">建库时间范围<select aria-label="文献库时间范围" value={range} onChange={e=>setRange(e.target.value)}><option value="7">最近 7 天</option><option value="30">最近 1 个月</option><option value="90">最近 3 个月</option><option value="180">最近 6 个月</option><option value="365">最近 1 年</option><option value="custom">自定义日期</option></select></label><label className="field">每个方向最多纳入<input aria-label="初始化每方向文献上限" type="number" min="1" max="5000" value={limit} onChange={e=>setLimit(Number(e.target.value))}/></label></div>
    {range==='custom'&&<div className="model-fields"><label className="field">开始日期<input aria-label="建库开始日期" type="date" value={start} max={end} onChange={e=>setStart(e.target.value)}/></label><label className="field">结束日期<input aria-label="建库结束日期" type="date" value={end} min={start} onChange={e=>setEnd(e.target.value)}/></label></div>}

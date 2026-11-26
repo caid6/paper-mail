@@ -72,7 +72,7 @@ export function connect(path:string) {
   if(!figureColumns.has('origin'))db.exec("ALTER TABLE figures ADD COLUMN origin TEXT NOT NULL DEFAULT 'pmc'");
   if(!figureColumns.has('source_page'))db.exec('ALTER TABLE figures ADD COLUMN source_page INTEGER');
   db.exec("UPDATE fulltexts SET status='pending' WHERE status='loading'");
-  db.prepare("UPDATE figures SET status='pending' WHERE status='generating'").run();
+  db.prepare("UPDATE figures SET status='pending' WHERE status IN ('fetching','generating')").run();
   const put=db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
   for(const [k,v] of Object.entries({time:'07:30',timezone:'Asia/Shanghai',per_topic:'10',auto_sync:'true',quality_enabled:'true',last_daily_date:'',last_sync:'',min_impact_factor:'',min_impact_operator:'gte',onboarding_seen:'false',backfill_status:'not_started',backfill_range:'30',backfill_days:'30',backfill_limit:'200',backfill_date_field:'crdt',json_output_migration:'pending',figure_queue_migration:'pending',content_retry_migration:'pending',queue_retry_migration:'pending',figure_sources_migration:'pending'}))put.run(k,v);
   if(settings(db).json_output_migration==='pending'){
@@ -83,6 +83,7 @@ export function connect(path:string) {
     setSetting(db,'json_output_migration','complete');
   }
   db.prepare("UPDATE pdf_figure_indexes SET status='pending',error=NULL WHERE status='processing'").run();
+  db.prepare("UPDATE publisher_figure_indexes SET status='pending',error=NULL WHERE status='processing'").run();
   if(settings(db).figure_queue_migration==='pending'){
     db.prepare("UPDATE publisher_figure_indexes SET status='pending',error=NULL WHERE status='error'").run();
     db.prepare("UPDATE pdf_figure_indexes SET status='pending',error=NULL WHERE status='error'").run();

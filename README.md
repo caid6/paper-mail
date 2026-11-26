@@ -15,9 +15,9 @@
 
 ## 安装与启动
 
-首次安装需要 **Node.js 22.13+** 和 **Python 3.11+**。macOS 可通过官网安装包安装。[Node.js 下载](https://nodejs.org/en/download) · [Python 下载](https://www.python.org/downloads/macos/)
+启动研邮需要 **Node.js 22.13+**。自动下载、上传和解析 PDF 需要 **Python 3.11+** 及 PDF 依赖。PubMed 收取与原文摘要可在 PDF 环境准备前使用。[Node.js 下载](https://nodejs.org/en/download) · [Python 下载](https://www.python.org/downloads/macos/)
 
-**macOS 后台启动。** 将项目放在 `~/Applications/paper-mail`，双击 `启动Paper-mail.command`。脚本会安装锁定的 npm 依赖、创建 Python 虚拟环境、构建网页，确认后台服务响应后打开收件箱。缺少运行时，脚本会打开对应的官方下载页。登录时服务自动启动，关闭浏览器后仍会收取论文。双击 `停止后台服务.command` 可取消登录启动。
+**macOS 后台启动。** 将项目放在 `~/Applications/paper-mail`，双击 `启动Paper-mail.command`。终端会显示安装各阶段和依赖下载进度。脚本优先复用项目内的 PDF 环境，检测到解释器失效时会重建。PDF 环境安装失败时，仍可启动研邮收取论文。装好 Python 或修复软件源后，再运行同一脚本即可恢复 PDF 队列。登录时服务自动启动，关闭浏览器后仍会收取论文。双击 `停止后台服务.command` 可取消登录启动。
 
 ```sh
 mkdir -p ~/Applications
@@ -28,7 +28,7 @@ cd ~/Applications/paper-mail
 
 **已安装的 macOS 用户。** 在原安装目录运行 `git pull --ff-only`，再运行 `./启动Paper-mail.command`。如果准备迁移安装位置，先在原目录运行 `./停止后台服务.command`，再移动整个目录，并在新目录启动。迁移时请一并保留 `data/` 和本机的 `.env`。从桌面、文稿或下载目录启动后台服务可能遇到 macOS 文件访问限制。[Apple 文件访问说明](https://support.apple.com/guide/security/controlling-app-access-to-files-secddd1d86a6/web)
 
-**手动启动。** 在克隆的项目目录执行以下命令，然后打开浏览器。定时收取需要进程持续运行。[打开本机收件箱](http://127.0.0.1:4317)
+**手动启动。** 在克隆的项目目录执行以下命令，然后打开浏览器。`npm run setup:python` 用于启用 PDF 处理，可单独运行。定时收取需要进程持续运行。[打开本机收件箱](http://127.0.0.1:4317)
 
 ```sh
 npm ci

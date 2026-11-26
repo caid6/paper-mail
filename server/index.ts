@@ -7,7 +7,7 @@ import { z } from 'zod';
 import { connect, settings, setSetting, subscriptions, hasEnabledSubscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
 import { fetchPubmed, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
 import { generateDigest, translateTitle, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
-import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval} from './library.ts';
+import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval,qualityStats} from './library.ts';
 import {enrichLibrary,enrichPaper,journalFilter,journalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
 import {downloadInfo,downloadState,requestDownload,downloadedPath} from './downloads.ts';
 import {figureState,queueFulltext,pumpFigures,pumpPublisherFigures,retryPublisherFigures} from './figures.ts';
@@ -147,14 +147,12 @@ async function performSync(kind:string,options:SyncOptions={}){
   }catch(e:any){db.prepare("UPDATE sync_runs SET finished_at=?,status='error',added=?,error=? WHERE id=?").run(new Date().toISOString(),added,e.message,run.lastInsertRowid);if(initial){setSetting(db,'initialize_status','error');setSetting(db,'initialize_error',e.message);}}
 }
 
-function qualityStats(){return db.prepare(`SELECT COUNT(*) FILTER (WHERE r.status IN ('pending','running','error') AND ps.paper_id IS NOT NULL) AS pending,COUNT(*) FILTER (WHERE r.verdict='relevant' AND ps.paper_id IS NOT NULL) AS relevant,COUNT(*) FILTER (WHERE r.verdict='borderline' AND ps.paper_id IS NOT NULL) AS borderline,COUNT(*) FILTER (WHERE r.verdict='irrelevant' AND ps.paper_id IS NULL) AS irrelevant
- FROM relevance_reviews r JOIN papers p ON p.id=r.paper_id LEFT JOIN paper_subscriptions ps ON ps.paper_id=r.paper_id AND ps.subscription_id=r.subscription_id WHERE p.in_library=1`).get();}
 app.get('/api/health',(_req,res)=>res.json({app:'paper-mail'}));
 app.put('/api/onboarding/dismiss',(_req,res)=>{
   setSetting(db,'onboarding_seen','true');
   res.json({ok:true});
 });
-app.get('/api/state',(_req,res)=>res.json({settings:settings(db),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
+app.get('/api/state',(_req,res)=>res.json({settings:settings(db),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(db),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
 app.get('/api/papers',(req,res)=>res.json(listPapers(db,listSchema.parse(req.query))));
 app.get('/api/papers/:id',(req,res)=>{const p=getPaper(db,req.params.id);if(!p)return res.status(404).json({error:'论文不存在'});res.json(p);});
 app.get('/api/papers/:id/download', (req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(downloadState(db,req.params.id));});
@@ -236,7 +234,7 @@ app.patch('/api/papers/:id',(req,res)=>{
     db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');throw error;}
   if(archived===false)prepareReading(db,root);
-  res.json(hydrate(db,db.prepare('SELECT * FROM papers WHERE id=?').get(req.params.id)));
+  res.json(getPaper(db,req.params.id));
 });
 app.post('/api/papers/:id/digest',(req,res)=>{
   const p=db.prepare('SELECT * FROM papers WHERE id=?').get(req.params.id);
@@ -316,8 +314,14 @@ app.post('/api/papers/bulk',(req,res)=>{
 });
 app.get('/api/papers/:id/figures',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(figureState(db,req.params.id));});
 app.post('/api/papers/:id/fulltext',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});queueFulltext(db,req.params.id);prepareReading(db,root);res.status(202).json({ok:true});});
-app.post('/api/figures/:id/retry',(req,res)=>{if(!aiConfigured())return res.status(409).json({error:'请先配置 AI 服务'});db.prepare("UPDATE figures SET status='pending',error=NULL WHERE id=? AND status='error'").run(req.params.id);void pumpFigures(db,root);res.json({ok:true});});
-app.post('/api/papers/:id/figures/retry',async(req,res)=>{if(!aiConfigured())return res.status(409).json({error:'请先配置 AI 服务'});retryPublisherFigures(db,req.params.id);await prepareReading(db,root);void pumpPublisherFigures(db,root);res.json({ok:true});});
+app.post('/api/figures/:id/retry',(req,res)=>{
+  const figure=db.prepare('SELECT image_path FROM figures WHERE id=?').get(req.params.id);
+  if(!figure)return res.status(404).json({error:'主图不存在'});
+  if(figure.image_path&&!aiConfigured())return res.status(409).json({error:'请先配置图文模型'});
+  db.prepare("UPDATE figures SET status='pending',error=NULL WHERE id=? AND status='error'").run(req.params.id);
+  void pumpFigures(db,root);res.json({ok:true});
+});
+app.post('/api/papers/:id/figures/retry',(req,res)=>{retryPublisherFigures(db,req.params.id);prepareReading(db,root);res.json({ok:true});});
 app.get('/api/figures/:id/image',(req,res)=>{const f:any=db.prepare('SELECT image_path,image_type FROM figures WHERE id=?').get(req.params.id);if(!f?.image_path)return res.sendStatus(404);res.setHeader('Content-Type',f.image_type);res.setHeader('Cache-Control','private,max-age=86400');res.sendFile(path.join(root,'data','figures',f.image_path));});
 app.get('/api/export',(_req,res)=>{
   const rows=db.prepare('SELECT * FROM papers WHERE starred=1 ORDER BY published DESC').all().map(p=>hydrate(db,p));

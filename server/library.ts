@@ -1,6 +1,6 @@
-import {aiConfigured} from './ai.ts';
+import {aiConfigured,modelJobStatus} from './ai.ts';
 import {z} from 'zod';
-import {type DB,type PaperInput,hydrate,upsertPaperRecord} from './core.ts';
+import {type DB,type PaperInput,hydrate,settings,upsertPaperRecord} from './core.ts';
 import {journalWhere} from './journals.ts';
 export const listSchema=z.object({
  folder:z.string().default('inbox'),
@@ -22,6 +22,20 @@ export function mailboxCounts(db:DB){
    COUNT(*) FILTER (WHERE ${removed}) AS removed,
    COUNT(*) FILTER (WHERE ? AND (in_library=1 OR starred=1) AND (digest_status IN ('pending','generating') OR title_status IN ('pending','generating'))) AS pending
    FROM papers p WHERE ${journalWhere(db)}`).get(Number(aiConfigured()));
+}
+
+export function qualityStats(db:DB){
+ const status=settings(db).quality_enabled!=='true'?'paused':aiConfigured()?'enabled':'unconfigured';
+ const counts=db.prepare(`SELECT
+   COUNT(*) FILTER (WHERE r.status IN ('pending','running') AND ps.paper_id IS NOT NULL) AS pending,
+   COUNT(*) FILTER (WHERE r.status='error' AND ps.paper_id IS NOT NULL) AS failed,
+   COUNT(*) FILTER (WHERE r.verdict='relevant' AND ps.paper_id IS NOT NULL) AS relevant,
+   COUNT(*) FILTER (WHERE r.verdict='borderline' AND ps.paper_id IS NOT NULL) AS borderline,
+   COUNT(*) FILTER (WHERE r.verdict='irrelevant' AND ps.paper_id IS NULL) AS irrelevant
+   FROM relevance_reviews r JOIN papers p ON p.id=r.paper_id
+   LEFT JOIN paper_subscriptions ps ON ps.paper_id=r.paper_id AND ps.subscription_id=r.subscription_id
+   WHERE p.in_library=1`).get()!;
+ return {...counts,status,pending:status==='enabled'?Number(counts.pending):0};
 }
 
 export function setArchive(db:DB,id:string,archive:boolean){
@@ -58,8 +72,11 @@ export function listPapers(db:DB,opts:ListOptions){
    FROM papers p WHERE ${sqlWhere}
    ORDER BY p.received_at DESC,p.id DESC LIMIT ? OFFSET ?`).all(...args,opts.page_size,(page-1)*opts.page_size);
  const topics=db.prepare('SELECT s.id,s.name,s.color FROM subscriptions s JOIN paper_subscriptions ps ON ps.subscription_id=s.id WHERE ps.paper_id=? ORDER BY s.rowid');
+ const configured=aiConfigured();
  const items=rows.map(row=>({
   ...row,
+  title_status:modelJobStatus(row.title_status,configured),
+  digest_status:modelJobStatus(row.digest_status,configured),
   id:String(row.id),
   publication_date:String(row.publication_date),
   indexed_at:String(row.indexed_at),
@@ -70,7 +87,19 @@ export function listPapers(db:DB,opts:ListOptions){
  }));
  return {items,total,page,page_size:opts.page_size,pages};
 }
-export function getPaper(db:DB,id:string){const row=db.prepare('SELECT * FROM papers WHERE id=?').get(id);return row?hydrate(db,row):null;}
+export function getPaper(db:DB,id:string){
+ const row=db.prepare('SELECT * FROM papers WHERE id=?').get(id);
+ if(!row)return null;
+ const paper=hydrate(db,row),configured=aiConfigured();
+ const qualityEnabled=settings(db).quality_enabled==='true';
+ return {...paper,
+  title_status:modelJobStatus(paper.title_status,configured),
+  digest_status:modelJobStatus(paper.digest_status,configured),
+  quality_reviews:paper.quality_reviews.map(review=>({...review,
+   status:review.status==='pending'&&!qualityEnabled?'paused':modelJobStatus(review.status,configured),
+  })),
+ };
+}
 export function topicCounts(db:DB){return db.prepare(`SELECT s.id,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND ${journalWhere(db)}) AS total,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND p.is_read=0 AND ${journalWhere(db)}) AS unread FROM subscriptions s LEFT JOIN paper_subscriptions ps ON ps.subscription_id=s.id LEFT JOIN papers p ON p.id=ps.paper_id GROUP BY s.id`).all();}
 export function saveSubscription(db:DB,id:string,s:{name:string;query:string;color:string;enabled:boolean;description:string;query_explanation:string},matches:string[],papers:PaperInput[]=[],now=new Date().toISOString()){
  db.exec('BEGIN IMMEDIATE');try{
