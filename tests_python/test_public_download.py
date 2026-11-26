@@ -42,3 +42,21 @@ class PublicDownloadTest(unittest.TestCase):
             self.assertEqual(result['status'], 'ready')
             self.assertEqual(result['identity'], 'title')
             self.assertEqual(Path(target, result['file_name']).read_bytes(), document.getvalue())
+
+    def test_doi_only_download_prefers_registered_pdf_and_verifies_identity(self):
+        title = 'A public paper with a DOI'
+        writer = PdfWriter()
+        writer.add_blank_page(width=400, height=600)
+        writer.add_metadata({'/Title': title})
+        document = io.BytesIO()
+        writer.write(document)
+        pdf = 'https://www.nature.com/articles/test.pdf'
+        with (
+            tempfile.TemporaryDirectory() as target,
+            patch('download_bridge.fetch', return_value=(pdf, document.getvalue())) as fetch,
+        ):
+            result = download({'doi':'10.1038/test', 'title':title, 'publisher_pdf':pdf, 'output_dir':target})
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(result['identity'], 'title')
+        fetch.assert_called_once()
+        self.assertEqual(fetch.call_args.args[0], pdf)

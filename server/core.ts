@@ -5,7 +5,7 @@ import {enrichPaper} from './journals.ts';
 
 export type Subscription = {id:string;name:string;color:string;query:string;enabled:number;description:string;query_explanation:string};
 export type PaperInput = {id:string;title:string;abstract:string;authors:string[];published:string;updated:string;categories:string[];url:string;pdf_url:string;source?:string;journal?:string;publication_date?:string;indexed_at?:string;doi?:string;pmcid?:string;pub_types?:string[];full_text_url?:string;journal_issns?:string[]};
-export type Paper = PaperInput & {title_zh:string|null;title_status:string;title_error:string|null;received_at:string;is_read:number;starred:number;archived:number;archive_origin:'manual'|'quality'|'legacy'|null;in_library:number;note:string;digest_status:string;digest_error:string|null;digest:Digest|null;subscriptions:Subscription[];quality_reviews:any[]};
+export type Paper = PaperInput & {pmid:string;title_zh:string|null;title_status:string;title_error:string|null;received_at:string;is_read:number;starred:number;archived:number;archive_origin:'manual'|'quality'|'legacy'|null;in_library:number;note:string;digest_status:string;digest_error:string|null;digest:Digest|null;subscriptions:Subscription[];quality_reviews:any[]};
 export const digestSchema=z.object({
   title_zh:z.string().min(1), one_liner:z.string().min(1), summary:z.string().min(1),
   problem:z.string().min(1), method:z.string().min(1), findings:z.array(z.string().min(1)).min(1).max(6),
@@ -19,17 +19,29 @@ export function connect(path:string) {
     CREATE TABLE IF NOT EXISTS subscriptions(id TEXT PRIMARY KEY,name TEXT NOT NULL,color TEXT NOT NULL,query TEXT NOT NULL,enabled INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS papers(id TEXT PRIMARY KEY,title TEXT NOT NULL,abstract TEXT NOT NULL,authors TEXT NOT NULL,published TEXT NOT NULL,updated TEXT NOT NULL,categories TEXT NOT NULL,url TEXT NOT NULL,pdf_url TEXT NOT NULL,received_at TEXT NOT NULL,is_read INTEGER NOT NULL DEFAULT 0,starred INTEGER NOT NULL DEFAULT 0,archived INTEGER NOT NULL DEFAULT 0,note TEXT NOT NULL DEFAULT '',digest TEXT,digest_status TEXT NOT NULL DEFAULT 'pending',digest_error TEXT,digest_model TEXT,digest_at TEXT);
     CREATE TABLE IF NOT EXISTS paper_subscriptions(paper_id TEXT REFERENCES papers(id) ON DELETE CASCADE,subscription_id TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,PRIMARY KEY(paper_id,subscription_id));
+    CREATE TABLE IF NOT EXISTS paper_topic_overrides(
+      paper_id TEXT NOT NULL REFERENCES papers(id) ON DELETE CASCADE,
+      subscription_id TEXT NOT NULL REFERENCES subscriptions(id) ON DELETE CASCADE,
+      included INTEGER NOT NULL CHECK(included IN (0,1)),
+      PRIMARY KEY(paper_id,subscription_id));
     CREATE TABLE IF NOT EXISTS relevance_reviews(paper_id TEXT REFERENCES papers(id) ON DELETE CASCADE,subscription_id TEXT REFERENCES subscriptions(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending',verdict TEXT,reason TEXT NOT NULL DEFAULT '',evidence TEXT NOT NULL DEFAULT '',model TEXT,reviewed_at TEXT,error TEXT,PRIMARY KEY(paper_id,subscription_id));
     CREATE TABLE IF NOT EXISTS sync_runs(id INTEGER PRIMARY KEY AUTOINCREMENT,started_at TEXT NOT NULL,finished_at TEXT,kind TEXT NOT NULL,status TEXT NOT NULL,added INTEGER NOT NULL DEFAULT 0,error TEXT);
     CREATE INDEX IF NOT EXISTS papers_received ON papers(received_at DESC);
     CREATE INDEX IF NOT EXISTS papers_digest ON papers(digest_status);
     CREATE INDEX IF NOT EXISTS papers_inbox_order ON papers(archived,published DESC,id DESC);
     CREATE INDEX IF NOT EXISTS papers_unread_order ON papers(archived,is_read,published DESC,id DESC);
+    CREATE INDEX IF NOT EXISTS paper_topic_overrides_by_topic ON paper_topic_overrides(subscription_id,paper_id);
     CREATE INDEX IF NOT EXISTS paper_subscriptions_by_topic ON paper_subscriptions(subscription_id,paper_id);`);
   db.exec(`CREATE INDEX IF NOT EXISTS relevance_reviews_status ON relevance_reviews(status,paper_id);
     INSERT OR IGNORE INTO relevance_reviews(paper_id,subscription_id,status)
-      SELECT ps.paper_id,ps.subscription_id,'pending' FROM paper_subscriptions ps;`);
+      SELECT ps.paper_id,ps.subscription_id,'pending' FROM paper_subscriptions ps
+      WHERE NOT EXISTS(SELECT 1 FROM paper_topic_overrides o WHERE o.paper_id=ps.paper_id AND o.subscription_id=ps.subscription_id);`);
   const columns=new Set(db.prepare('PRAGMA table_info(papers)').all().map(c=>String(c.name)));
+  if(!columns.has('manual_added'))db.exec('ALTER TABLE papers ADD COLUMN manual_added INTEGER NOT NULL DEFAULT 0');
+  if(!columns.has('pmid'))db.exec(`BEGIN IMMEDIATE;
+    ALTER TABLE papers ADD COLUMN pmid TEXT NOT NULL DEFAULT '';
+    UPDATE papers SET pmid=substr(id,6) WHERE id GLOB 'pmid:[0-9]*';
+    COMMIT;`);
   if(!columns.has('in_library'))db.exec('ALTER TABLE papers ADD COLUMN in_library INTEGER NOT NULL DEFAULT 1');
   if(!columns.has('archive_origin')){
     db.exec(`BEGIN IMMEDIATE;
@@ -39,6 +51,7 @@ export function connect(path:string) {
   }
   for(const [name,def] of Object.entries({source:"TEXT NOT NULL DEFAULT 'arxiv'",journal:"TEXT NOT NULL DEFAULT ''",publication_date:"TEXT NOT NULL DEFAULT ''",indexed_at:"TEXT NOT NULL DEFAULT ''",doi:"TEXT NOT NULL DEFAULT ''",pmcid:"TEXT NOT NULL DEFAULT ''",pub_types:"TEXT NOT NULL DEFAULT '[]'",full_text_url:"TEXT NOT NULL DEFAULT ''"}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
   for(const [name,def] of Object.entries({journal_issns:"TEXT NOT NULL DEFAULT '[]'",journal_id:"TEXT NOT NULL DEFAULT ''",jif_label:"TEXT NOT NULL DEFAULT ''",jif_status:"TEXT NOT NULL DEFAULT ''",impact_factor:'REAL',cas_zone:'INTEGER',metric_match:"TEXT NOT NULL DEFAULT 'unmatched'",metric_journal:"TEXT NOT NULL DEFAULT ''",metric_source:"TEXT NOT NULL DEFAULT ''",metric_year:'INTEGER',metric_edition:'INTEGER'}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
+  db.exec("CREATE INDEX IF NOT EXISTS papers_doi ON papers(lower(doi)) WHERE doi<>''; CREATE UNIQUE INDEX IF NOT EXISTS papers_pmid ON papers(pmid) WHERE pmid<>''");
   for(const [name,def] of Object.entries({title_zh:'TEXT',title_status:"TEXT NOT NULL DEFAULT 'pending'",title_error:'TEXT'}))if(!columns.has(name))db.exec(`ALTER TABLE papers ADD COLUMN ${name} ${def}`);
   db.exec("UPDATE papers SET title_zh=json_extract(digest,'$.title_zh'),title_status='ready',title_error=NULL WHERE digest IS NOT NULL AND title_zh IS NULL AND json_valid(digest) AND json_type(digest,'$.title_zh')='text'");
   db.exec(`CREATE INDEX IF NOT EXISTS papers_impact ON papers(impact_factor,archived,published);
@@ -138,25 +151,43 @@ export function hasEnabledSubscriptions(db:DB){
 export function upsertPaper(db:DB,p:PaperInput,subscriptionId:string,now=new Date().toISOString()) {
   db.exec('BEGIN IMMEDIATE');
   try {
-    const wasInLibrary=Boolean(db.prepare('SELECT in_library FROM papers WHERE id=?').get(p.id)?.in_library);
-    const added=upsertPaperRecord(db,p,now);
-    db.prepare("UPDATE papers SET in_library=1 WHERE id=? AND source='pubmed'").run(p.id);
-    linkPaper(db,p.id,subscriptionId,settings(db).quality_enabled==='true');
+    const {id,added,wasInLibrary}=upsertPaperRecord(db,p,now);
+    db.prepare("UPDATE papers SET in_library=1 WHERE id=? AND source='pubmed'").run(id);
+    linkPaper(db,id,subscriptionId,settings(db).quality_enabled==='true');
     db.exec('COMMIT');
     return added||!wasInLibrary;
   }catch(e){db.exec('ROLLBACK');throw e;}
 }
+export function findStoredPaper(db:DB,p:PaperInput){
+  const pmid=p.id.startsWith('pmid:')?p.id.slice(5):'';
+  const exact=db.prepare("SELECT id,in_library,archived,source,updated,title,abstract,pdf_url FROM papers WHERE id=? OR (pmid<>'' AND pmid=?)").get(p.id,pmid);
+  if(exact||!p.doi)return exact;
+  // Use a DOI to join sources. Distinct PubMed records retain their own PMIDs.
+  return db.prepare("SELECT id,in_library,archived,source,updated,title,abstract,pdf_url FROM papers WHERE doi<>'' AND lower(doi)=lower(?) AND (?='' OR pmid='') ORDER BY pmid<>'' DESC,received_at,id LIMIT 1").get(p.doi,pmid);
+}
+
 export function upsertPaperRecord(db:DB,p:PaperInput,now:string){
-  const existing=db.prepare('SELECT updated,title,abstract FROM papers WHERE id=?').get(p.id) as {updated:string;title:string;abstract:string}|undefined;
-    db.prepare(`INSERT INTO papers(id,title,abstract,authors,published,updated,categories,url,pdf_url,received_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,abstract=excluded.abstract,authors=excluded.authors,published=excluded.published,updated=excluded.updated,categories=excluded.categories,url=excluded.url,pdf_url=excluded.pdf_url,digest=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN NULL ELSE papers.digest END,digest_status=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN 'pending' ELSE papers.digest_status END,digest_error=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN NULL ELSE papers.digest_error END,title_zh=CASE WHEN papers.title<>excluded.title THEN NULL ELSE papers.title_zh END,title_status=CASE WHEN papers.title<>excluded.title THEN 'pending' ELSE papers.title_status END,title_error=CASE WHEN papers.title<>excluded.title THEN NULL ELSE papers.title_error END WHERE excluded.updated>=papers.updated`).run(p.id,p.title,p.abstract,JSON.stringify(p.authors),p.published,p.updated,JSON.stringify(p.categories),p.url,p.pdf_url,now);
-    db.prepare("UPDATE papers SET source=?,journal=?,publication_date=?,indexed_at=?,doi=?,pmcid=?,pub_types=?,full_text_url=? WHERE id=? AND updated=?").run(p.source||'arxiv',p.journal||'',p.publication_date??p.published,p.indexed_at??'',p.doi||'',p.pmcid||'',JSON.stringify(p.pub_types||[]),p.full_text_url||'',p.id,p.updated);
+  const existing=findStoredPaper(db,p);
+  const id=String(existing?.id??p.id);
+  const wasInLibrary=Boolean(existing?.in_library);
+  const pmid=p.id.startsWith('pmid:')?p.id.slice(5):'';
+  if(existing?.source==='pubmed'&&p.source==='crossref')return {id,added:false,wasInLibrary};
+  const indexedByPubmed=p.source==='pubmed'&&existing?.source==='crossref';
+  // A Crossref import retains its local ID when PubMed indexes it later.
+  if(p.source==='pubmed'&&id.startsWith('doi-')){
+    p={...p,abstract:p.abstract||String(existing?.abstract||''),pdf_url:p.pdf_url||String(existing?.pdf_url||'')};
+  }
+  p={...p,id};
+    db.prepare(`INSERT INTO papers(id,title,abstract,authors,published,updated,categories,url,pdf_url,received_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET title=excluded.title,abstract=excluded.abstract,authors=excluded.authors,published=excluded.published,updated=excluded.updated,categories=excluded.categories,url=excluded.url,pdf_url=excluded.pdf_url,digest=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN NULL ELSE papers.digest END,digest_status=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN 'pending' ELSE papers.digest_status END,digest_error=CASE WHEN (papers.updated<>excluded.updated OR papers.abstract<>excluded.abstract OR papers.title<>excluded.title) THEN NULL ELSE papers.digest_error END,title_zh=CASE WHEN papers.title<>excluded.title THEN NULL ELSE papers.title_zh END,title_status=CASE WHEN papers.title<>excluded.title THEN 'pending' ELSE papers.title_status END,title_error=CASE WHEN papers.title<>excluded.title THEN NULL ELSE papers.title_error END WHERE excluded.updated>=papers.updated OR ?`).run(p.id,p.title,p.abstract,JSON.stringify(p.authors),p.published,p.updated,JSON.stringify(p.categories),p.url,p.pdf_url,now,Number(indexedByPubmed));
+    db.prepare("UPDATE papers SET source=?,pmid=?,journal=?,publication_date=?,indexed_at=?,doi=?,pmcid=?,pub_types=?,full_text_url=? WHERE id=? AND updated=?").run(p.source||'arxiv',pmid,p.journal||'',p.publication_date??p.published,p.indexed_at??'',p.doi||'',p.pmcid||'',JSON.stringify(p.pub_types||[]),p.full_text_url||'',p.id,p.updated);
     if(p.journal_issns)db.prepare('UPDATE papers SET journal_issns=? WHERE id=? AND updated=?').run(JSON.stringify(p.journal_issns),p.id,p.updated);
     enrichPaper(db,p.id);
-    if(!p.abstract)db.prepare("UPDATE papers SET digest_status='unavailable',digest_error='PubMed 未提供摘要，请打开全文阅读' WHERE id=? AND updated=?").run(p.id,p.updated);
-    if(existing&&p.updated>=existing.updated&&(existing.updated!==p.updated||existing.title!==p.title||existing.abstract!==p.abstract))db.prepare("UPDATE relevance_reviews SET status='pending',verdict=NULL,reason='',evidence='',model=NULL,reviewed_at=NULL,error=NULL WHERE paper_id=?").run(p.id);
-  return !existing;
+    if(!p.abstract)db.prepare("UPDATE papers SET digest_status='unavailable',digest_error='来源未提供作者摘要，请打开全文阅读' WHERE id=? AND updated=?").run(p.id,p.updated);
+    if(existing&&(indexedByPubmed||p.updated>=String(existing.updated))&&(existing.updated!==p.updated||existing.title!==p.title||existing.abstract!==p.abstract))db.prepare("UPDATE relevance_reviews SET status='pending',verdict=NULL,reason='',evidence='',model=NULL,reviewed_at=NULL,error=NULL WHERE paper_id=?").run(p.id);
+  return {id,added:!existing,wasInLibrary};
 }
 export function linkPaper(db:DB,paperId:string,subscriptionId:string,qualityEnabled:boolean){
+  if(db.prepare('SELECT 1 FROM paper_topic_overrides WHERE paper_id=? AND subscription_id=?').get(paperId,subscriptionId))return;
   db.prepare("INSERT OR IGNORE INTO relevance_reviews(paper_id,subscription_id,status) VALUES(?,?,'pending')").run(paperId,subscriptionId);
   db.prepare(`INSERT OR IGNORE INTO paper_subscriptions SELECT ?,? WHERE NOT EXISTS(
     SELECT 1 FROM relevance_reviews WHERE paper_id=? AND subscription_id=? AND status='complete' AND verdict='irrelevant' AND ?=1)`).run(paperId,subscriptionId,paperId,subscriptionId,Number(qualityEnabled));

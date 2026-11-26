@@ -3849,3 +3849,100 @@ svg {
 .journal-results li strong { display: block; font-size: 12px; overflow-wrap: anywhere; }
 .journal-results li small { color: var(--muted, #64748b); font-size: 11px; }
 .journal-selection summary { cursor: pointer; font-size: 13px; font-weight: 600; padding: 8px 0; }
+
+.import-button {
+  flex-shrink: 0;
+  white-space: nowrap;
+  color: var(--blue);
+  padding: 6px 9px;
+  min-height: 32px;
+}
+.paper-import {
+  overflow: auto;
+  min-height: 0;
+  padding: 22px 30px 26px;
+}
+.paper-import-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+.paper-import-search input {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #f6f8fc;
+  color: var(--text);
+  padding: 9px 12px;
+  font: inherit;
+}
+.paper-import-error {
+  color: #aa3549;
+  margin: 13px 0 0;
+}
+.paper-import-empty {
+  color: #62738f;
+  margin: 16px 0 0;
+}
+.paper-import-results {
+  list-style: none;
+  margin: 12px 0 0;
+  padding: 0;
+}
+.paper-import-results li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 15px 0;
+  border-bottom: 1px solid var(--line);
+}
+.paper-import-results li:last-child { border-bottom: 0; }
+.paper-import-results strong {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+.paper-import-results p {
+  margin: 5px 0 0;
+  font-size: 12px;
+  color: #62738f;
+  overflow-wrap: anywhere;
+}
+.paper-import-results button { flex-shrink: 0; }
+
+@media (max-width: 520px) {
+  .paper-import { padding: 17px 20px 20px; }
+  .paper-import-results li { align-items: flex-start; }
+}
+
+.heading-tags { align-items: center; }
+.paper-topic-edit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-height: 28px;
+  padding: 4px 7px;
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.paper-topic-edit:hover { color: var(--blue); background: var(--blue-soft); }
+.paper-topic-editor {
+  overflow: auto;
+  min-height: 0;
+  padding: 12px 30px 22px;
+}
+.paper-topic-options label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 42px;
+  padding: 7px 4px;
+  cursor: pointer;
+}
+.paper-topic-options label + label { border-top: 1px solid var(--line); }
+.paper-topic-dot { width: 7px; height: 7px; flex-shrink: 0; border-radius: 50%; }
+.paper-topic-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 16px; }
+.paper-topic-empty p { color: var(--muted); margin: 3px 0 15px; }
+@media (max-width: 520px) { .paper-topic-editor { padding: 10px 20px 18px; } }

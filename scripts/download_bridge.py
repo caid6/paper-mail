@@ -146,23 +146,28 @@ def retrieve(url, target, doi, title, seen):
 
 
 def download(request):
-    pmid = str(request['pmid'])
-    if not re.fullmatch(r'\d+', pmid):
-        raise ValueError('PMID 无效')
+    pmid = str(request.get('pmid') or '')
     pmcid = request.get('pmcid') or ''
     doi = request.get('doi') or ''
+    if (pmid and not re.fullmatch(r'\d+', pmid)) or not (pmid or doi):
+        raise ValueError('缺少有效的论文标识符')
     title = request.get('title') or ''
     target = Path(request['output_dir'])
     target.mkdir(parents=True, exist_ok=True)
     prepared_pdf = request.get('prepared_pdf') or ''
     attempts = []
     landing = 'https://doi.org/' + quote(doi, safe='/') if doi else 'https://pubmed.ncbi.nlm.nih.gov/' + pmid + '/'
-    sources = [
-        ('PubMed Central', lambda: pmc_candidates(pmcid, prepared_pdf)),
-        ('Europe PMC', lambda: europe_pmc_candidates(pmid, pmcid, doi)),
-    ]
+    sources = []
+    if pmid:
+        sources.extend([
+            ('PubMed Central', lambda: pmc_candidates(pmcid, prepared_pdf)),
+            ('Europe PMC', lambda: europe_pmc_candidates(pmid, pmcid, doi)),
+        ])
     if doi:
-        sources.extend([('出版社公开全文', lambda: [landing]), ('OpenAlex', lambda: openalex_candidates(doi))])
+        sources.extend([
+            ('出版社公开全文', lambda: [request.get('publisher_pdf'), landing]),
+            ('OpenAlex', lambda: openalex_candidates(doi)),
+        ])
     seen = set()
     for source, candidates in sources:
         detail = '没有找到通过身份校验的公开 PDF'
@@ -189,7 +194,7 @@ def download(request):
             except Exception:
                 detail = '文件无法通过 PDF 解析和身份校验'
         attempts.append({'source':source, 'status':'not_available', 'detail':detail})
-    if skill := request.get('skill'):
+    if pmid and (skill := request.get('skill')):
         try:
             result = subprocess.run(
                 [sys.executable, str(Path(__file__).with_name('download_with_skill.py'))],

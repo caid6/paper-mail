@@ -1,7 +1,7 @@
 import {aiConfigured,modelJobStatus} from './ai.ts';
 import {z} from 'zod';
-import {type DB,type PaperInput,hydrate,settings,upsertPaperRecord} from './core.ts';
-import {journalWhere} from './journals.ts';
+import {type DB,type PaperInput,hydrate,settings,upsertPaperRecord,linkPaper} from './core.ts';
+import {mailboxJournalWhere} from './journals.ts';
 export const listSchema=z.object({
  folder:z.string().default('inbox'),
  q:z.string().max(500).default(''),
@@ -21,7 +21,7 @@ export function mailboxCounts(db:DB){
    COUNT(*) FILTER (WHERE ${manualArchive}) AS archived,
    COUNT(*) FILTER (WHERE ${removed}) AS removed,
    COUNT(*) FILTER (WHERE ? AND (in_library=1 OR starred=1) AND (digest_status IN ('pending','generating') OR title_status IN ('pending','generating'))) AS pending
-   FROM papers p WHERE ${journalWhere(db)}`).get(Number(aiConfigured()));
+   FROM papers p WHERE ${mailboxJournalWhere(db)}`).get(Number(aiConfigured()));
 }
 
 export function qualityStats(db:DB){
@@ -38,6 +38,34 @@ export function qualityStats(db:DB){
  return {...counts,status,pending:status==='enabled'?Number(counts.pending):0};
 }
 
+export const paperTopicChangesSchema=z.array(z.object({
+ subscription_id:z.string().min(1).max(128),
+ included:z.boolean(),
+}).strict()).min(1).refine(changes=>new Set(changes.map(change=>change.subscription_id)).size===changes.length,{
+ message:'同一研究方向只能修改一次',
+});
+
+export function editPaperTopics(db:DB,paperId:string,changes:z.infer<typeof paperTopicChangesSchema>){
+ const exists=db.prepare('SELECT 1 FROM subscriptions WHERE id=?');
+ if(changes.some(change=>!exists.get(change.subscription_id)))return false;
+
+ const override=db.prepare(`INSERT INTO paper_topic_overrides(paper_id,subscription_id,included) VALUES(?,?,?)
+   ON CONFLICT(paper_id,subscription_id) DO UPDATE SET included=excluded.included`);
+ const include=db.prepare('INSERT OR IGNORE INTO paper_subscriptions(paper_id,subscription_id) VALUES(?,?)');
+ const exclude=db.prepare('DELETE FROM paper_subscriptions WHERE paper_id=? AND subscription_id=?');
+ const clearReview=db.prepare('DELETE FROM relevance_reviews WHERE paper_id=? AND subscription_id=?');
+ for(const {subscription_id,included} of changes){
+  override.run(paperId,subscription_id,Number(included));
+  clearReview.run(paperId,subscription_id);
+  (included?include:exclude).run(paperId,subscription_id);
+ }
+ // A manual label can restore a paper previously removed by topic review.
+ if(changes.some(change=>change.included)){
+  db.prepare("UPDATE papers SET archived=0,archive_origin=NULL WHERE id=? AND archive_origin='quality'").run(paperId);
+ }
+ return true;
+}
+
 export function setArchive(db:DB,id:string,archive:boolean){
  if(archive){
   db.prepare("UPDATE papers SET archived=1, archive_origin='manual' WHERE id=?").run(id);
@@ -48,12 +76,12 @@ export function setArchive(db:DB,id:string,archive:boolean){
 
 export function recordQualityRemoval(db:DB,id:string){
  db.prepare(`UPDATE papers SET archived=1, archive_origin='quality' WHERE id=?
-   AND archive_origin IS NOT 'manual'
+   AND archive_origin IS NOT 'manual' AND manual_added=0
    AND NOT EXISTS (SELECT 1 FROM paper_subscriptions WHERE paper_id=papers.id)`).run(id);
 }
 
 export function listPapers(db:DB,opts:ListOptions){
- const where:string[]=[journalWhere(db)];const args:(string|number)[]=[];
+ const where:string[]=[mailboxJournalWhere(db)];const args:(string|number)[]=[];
  if(opts.folder==='inbox')where.push('p.archived=0 AND p.in_library=1');
  else if(opts.folder==='unread')where.push('p.archived=0 AND p.in_library=1 AND p.is_read=0');
  else if(opts.folder==='starred')where.push('p.starred=1');
@@ -64,7 +92,7 @@ export function listPapers(db:DB,opts:ListOptions){
  if(opts.filter==='unread')where.push('p.is_read=0');
  if(opts.filter==='read')where.push('p.is_read=1');
  if(opts.filter==='ready')where.push("p.digest_status='ready'");
- if(opts.q){const pattern='%'+opts.q.replace(/[\\%_]/g,'\\$&')+'%';where.push("(p.title LIKE ? ESCAPE '\\' OR p.title_zh LIKE ? ESCAPE '\\' OR p.authors LIKE ? ESCAPE '\\' OR p.journal LIKE ? ESCAPE '\\' OR p.abstract LIKE ? ESCAPE '\\' OR p.id LIKE ? ESCAPE '\\' OR json_extract(p.digest,'$.title_zh') LIKE ? ESCAPE '\\')");for(let i=0;i<7;i++)args.push(pattern);}
+ if(opts.q){const pattern='%'+opts.q.replace(/[\\%_]/g,'\\$&')+'%';where.push("(p.title LIKE ? ESCAPE '\\' OR p.title_zh LIKE ? ESCAPE '\\' OR p.authors LIKE ? ESCAPE '\\' OR p.journal LIKE ? ESCAPE '\\' OR p.abstract LIKE ? ESCAPE '\\' OR p.pmid LIKE ? ESCAPE '\\' OR p.doi LIKE ? ESCAPE '\\' OR p.id LIKE ? ESCAPE '\\' OR json_extract(p.digest,'$.title_zh') LIKE ? ESCAPE '\\')");for(let i=0;i<9;i++)args.push(pattern);}
  const sqlWhere=where.join(' AND ');
  const total=Number(db.prepare(`SELECT COUNT(*) AS n FROM papers p WHERE ${sqlWhere}`).get(...args)!.n);
  const pages=Math.max(1,Math.ceil(total/opts.page_size)),page=Math.min(opts.page,pages);
@@ -100,16 +128,25 @@ export function getPaper(db:DB,id:string){
   })),
  };
 }
-export function topicCounts(db:DB){return db.prepare(`SELECT s.id,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND ${journalWhere(db)}) AS total,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND p.is_read=0 AND ${journalWhere(db)}) AS unread FROM subscriptions s LEFT JOIN paper_subscriptions ps ON ps.subscription_id=s.id LEFT JOIN papers p ON p.id=ps.paper_id GROUP BY s.id`).all();}
+export function topicCounts(db:DB){return db.prepare(`SELECT s.id,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND ${mailboxJournalWhere(db)}) AS total,COUNT(*) FILTER (WHERE p.archived=0 AND p.in_library=1 AND p.is_read=0 AND ${mailboxJournalWhere(db)}) AS unread FROM subscriptions s LEFT JOIN paper_subscriptions ps ON ps.subscription_id=s.id LEFT JOIN papers p ON p.id=ps.paper_id GROUP BY s.id`).all();}
 export function saveSubscription(db:DB,id:string,s:{name:string;query:string;color:string;enabled:boolean;description:string;query_explanation:string},matches:string[],papers:PaperInput[]=[],now=new Date().toISOString()){
  db.exec('BEGIN IMMEDIATE');try{
   db.prepare('INSERT INTO subscriptions(id,name,query,color,enabled,description,query_explanation) VALUES(?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,query=excluded.query,color=excluded.color,enabled=excluded.enabled,description=excluded.description,query_explanation=excluded.query_explanation').run(id,s.name,s.query,s.color,Number(s.enabled),s.description,s.query_explanation);
-  db.prepare("DELETE FROM paper_subscriptions WHERE subscription_id=? AND paper_id IN (SELECT id FROM papers WHERE source='pubmed')").run(id);
+  db.prepare(`DELETE FROM paper_subscriptions WHERE subscription_id=?
+    AND paper_id IN (SELECT id FROM papers WHERE source='pubmed')
+    AND NOT EXISTS(SELECT 1 FROM paper_topic_overrides o
+      WHERE o.paper_id=paper_subscriptions.paper_id AND o.subscription_id=paper_subscriptions.subscription_id)`).run(id);
   db.prepare("DELETE FROM relevance_reviews WHERE subscription_id=? AND paper_id NOT IN (SELECT paper_id FROM paper_subscriptions WHERE subscription_id=?)").run(id,id);
   let added=0;
-  for(const paper of papers){if(upsertPaperRecord(db,paper,now))added++;db.prepare("UPDATE papers SET in_library=1 WHERE id=? AND source='pubmed'").run(paper.id);}
-  for(const paperId of matches){db.prepare('INSERT OR IGNORE INTO paper_subscriptions VALUES(?,?)').run(paperId,id);db.prepare("INSERT OR IGNORE INTO relevance_reviews(paper_id,subscription_id,status) VALUES(?,?,'pending')").run(paperId,id);}
+  for(const paper of papers){
+   const stored=upsertPaperRecord(db,paper,now);
+   if(stored.added)added++;
+   db.prepare("UPDATE papers SET in_library=1 WHERE id=? AND source='pubmed'").run(stored.id);
+  }
+  const byPmid=db.prepare("SELECT id FROM papers WHERE pmid<>'' AND pmid=?");
+  const storedMatches=new Set(matches.map(paperId=>paperId.startsWith('pmid:')?String(byPmid.get(paperId.slice(5))?.id??paperId):paperId));
+  for(const paperId of storedMatches)linkPaper(db,paperId,id,false);
   db.exec('COMMIT');
-  return {added,matched:matches.length};
+  return {added,matched:storedMatches.size};
  }catch(e){db.exec('ROLLBACK');throw e;}
 }

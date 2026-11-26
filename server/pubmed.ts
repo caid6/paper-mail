@@ -92,14 +92,16 @@ export function pubmedDateClause(start:string,end:string,field:'crdt'|'pdat'|'ed
  if(!/^\d{4}-\d{2}-\d{2}$/.test(start)||!/^\d{4}-\d{2}-\d{2}$/.test(end)||start>end)throw new Error('PubMed 日期范围无效');
  return `${start.replaceAll('-','/')}:${end.replaceAll('-','/')}[${field}]`;
 }
-export async function fetchPubmed(query:string,count:number,allowedMissingJournalIssns:string[]=[],webEnv='',dateClause=''){
+export async function fetchPubmed(query:string,count:number,allowedMissingJournalIssns:string[]=[],webEnv='',dateClause='',allowEmptyLookup=false){
  const term=dateClause?`(${query}) AND (${dateClause})`:query;
  // NCBI 只有在同一 WebEnv 的后续检索显式携带 usehistory=y 时，才会解析
  // `#1`、`#2` 这类历史检索集合引用。缺少该参数时，PubMed 会返回
  // “Wrong subquery”，表现为影响因子筛选结果为 0。
  const response:any=await (await ncbi('esearch.fcgi',{db:'pubmed',term,retmode:'json',retmax:String(count),sort:'most recent',...(webEnv?{WebEnv:webEnv,usehistory:'y'}:{})})).json();
- validateSearchErrors(response,allowedMissingJournalIssns);
  const result=response.esearchresult;
+ const unrecognized=allowEmptyLookup&&result?.count==='0'&&Array.isArray(result?.errorlist?.phrasesnotfound)
+  ?result.errorlist.phrasesnotfound:[];
+ validateSearchErrors(response,[...allowedMissingJournalIssns,...unrecognized]);
  const ids=result?.idlist;
  if(!Array.isArray(ids)||!/^\d+$/.test(String(result?.count))||ids.length!==Math.min(count,Number(result.count))||new Set(ids).size!==ids.length||!ids.every(id=>/^\d+$/.test(id)))throw new Error('PubMed 没有返回完整有效的检索结果');
  const papers:PaperInput[]=[];

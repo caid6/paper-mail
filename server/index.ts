@@ -7,13 +7,14 @@ import { z } from 'zod';
 import { connect, settings, setSetting, subscriptions, hasEnabledSubscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
 import { fetchPubmed, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
 import { generateDigest, translateTitle, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
-import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval,qualityStats} from './library.ts';
-import {enrichLibrary,enrichPaper,journalFilter,journalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
+import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval,qualityStats,editPaperTopics,paperTopicChangesSchema} from './library.ts';
+import {enrichLibrary,enrichPaper,journalFilter,mailboxJournalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
 import {downloadInfo,downloadState,requestDownload,downloadedPath} from './downloads.ts';
 import {figureState,queueFulltext,pumpFigures,pumpPublisherFigures,retryPublisherFigures} from './figures.ts';
 import {replaceLibrary,type Initialization,type TopicMatches} from './initialization.ts';
 import {ensureDocument,documentState,uploadDocument,chatHistory,askDocument,clearChat,DocumentError} from './documents.ts';
 import {prepareReading,readingPreparationStats} from './reading-preparation.ts';
+import {describeCandidate,importPaper,lookupPapers,InvalidLookupInput} from './manual-import.ts';
 
 import {generateJournalPlan} from './journal-plans.ts';
 
@@ -45,7 +46,7 @@ async function sync(kind:string,options:SyncOptions={}){if(syncing)return;syncin
 async function pumpDigests(){
   if(!aiConfigured())return;
   while(workers<2){
-    const row=db.prepare(`SELECT * FROM papers p WHERE digest_status='pending' AND (in_library=1 OR starred=1) AND ${journalWhere(db)} ORDER BY starred DESC,published DESC LIMIT 1`).get();
+    const row=db.prepare(`SELECT * FROM papers p WHERE digest_status='pending' AND (in_library=1 OR starred=1) AND ${mailboxJournalWhere(db)} ORDER BY p.manual_added DESC,p.starred DESC,p.published DESC LIMIT 1`).get();
     if(!row)break;
     db.prepare("UPDATE papers SET digest_status='generating',digest_error=NULL WHERE id=?").run(row.id as string);workers++;
     const paper=hydrate(db,row);const version=paper.updated;const config=activeAI();const model=config.model;
@@ -61,8 +62,8 @@ async function pumpTitles(){
  if(!aiConfigured())return;
  while(titleWorkers<2){
   const row:any=db.prepare(`SELECT p.id,p.title,p.updated FROM papers p
-    WHERE p.title_status='pending' AND (p.in_library=1 OR p.starred=1) AND ${journalWhere(db)}
-    ORDER BY p.starred DESC,p.received_at DESC LIMIT 1`).get();
+    WHERE p.title_status='pending' AND (p.in_library=1 OR p.starred=1) AND ${mailboxJournalWhere(db)}
+    ORDER BY p.manual_added DESC,p.starred DESC,p.received_at DESC LIMIT 1`).get();
   if(!row)break;
   db.prepare("UPDATE papers SET title_status='generating',title_error=NULL WHERE id=? AND title_status='pending'").run(row.id);titleWorkers++;
   const config=activeAI();
@@ -154,6 +155,20 @@ app.put('/api/onboarding/dismiss',(_req,res)=>{
 });
 app.get('/api/state',(_req,res)=>res.json({settings:settings(db),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(db),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
 app.get('/api/papers',(req,res)=>res.json(listPapers(db,listSchema.parse(req.query))));
+const lookupQuery=z.string().trim().min(1).max(500);
+app.post('/api/papers/lookup',async(req,res)=>{
+ const {query}=z.object({query:lookupQuery}).parse(req.body);
+ const papers=await lookupPapers(query);
+ res.json({items:papers.map(p=>describeCandidate(db,p))});
+});
+app.post('/api/papers/import',async(req,res)=>{
+ const {identifier}=z.object({identifier:lookupQuery.regex(/^(?:[1-9]\d{0,11}|10\.\d{4,9}\/[^\s]+)$/i)}).parse(req.body);
+ const [record]=await lookupPapers(identifier);
+ if(!record)return res.status(404).json({error:'找不到这篇论文，请重新检索'});
+ const result=await withLibraryLock(()=>importPaper(db,record));
+ void pumpDigests();void pumpTitles();prepareReading(db,root);
+ res.status(result.status==='added'?201:200).json(result);
+});
 app.get('/api/papers/:id',(req,res)=>{const p=getPaper(db,req.params.id);if(!p)return res.status(404).json({error:'论文不存在'});res.json(p);});
 app.get('/api/papers/:id/download', (req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(downloadState(db,req.params.id));});
 app.get('/api/papers/:id/document',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(documentState(db,root,req.params.id));});
@@ -225,15 +240,22 @@ app.post('/api/initialize',(req,res)=>{
   void sync('initialize',{dateClause:pubmedDateClause(input.start,input.end,input.date_field),initialize:input});res.status(202).json({ok:true});
 });
 app.patch('/api/papers/:id',(req,res)=>{
-  const {archived,...patch}=z.object({is_read:z.boolean().optional(),starred:z.boolean().optional(),archived:z.boolean().optional(),note:z.string().max(20000).optional()}).strict().parse(req.body);
+  const {archived,topic_changes,...patch}=z.object({
+    is_read:z.boolean().optional(),starred:z.boolean().optional(),archived:z.boolean().optional(),
+    note:z.string().max(20000).optional(),topic_changes:paperTopicChangesSchema.optional(),
+  }).strict().parse(req.body);
   if(!db.prepare('SELECT id FROM papers WHERE id=?').get(req.params.id))return res.status(404).json({error:'论文不存在'});
   db.exec('BEGIN IMMEDIATE');
   try{
+    if(topic_changes&&!editPaperTopics(db,req.params.id,topic_changes)){
+      db.exec('ROLLBACK');
+      return res.status(409).json({error:'研究方向已删除，请重新打开标签编辑'});
+    }
     for(const [key,value] of Object.entries(patch))db.prepare(`UPDATE papers SET ${key}=? WHERE id=?`).run(typeof value==='boolean'?Number(value):value,req.params.id);
     if(archived!==undefined)setArchive(db,req.params.id,archived);
     db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');throw error;}
-  if(archived===false)prepareReading(db,root);
+  if(archived===false||topic_changes)prepareReading(db,root);
   res.json(getPaper(db,req.params.id));
 });
 app.post('/api/papers/:id/digest',(req,res)=>{
@@ -266,7 +288,7 @@ async function writeTopic(id:string,s:z.infer<typeof subscriptionSchema>){
  if(validation.warnings.length)throw new Error('PubMed 未识别部分检索词，请调整并重新验证：'+validation.warnings.join('；'));
  const previous=db.prepare('SELECT query FROM subscriptions WHERE id=?').get(id);
  const changed=previous?.query!==s.query;
- const ids=db.prepare("SELECT id FROM papers WHERE source='pubmed'").all().map(x=>String(x.id));
+ const ids=db.prepare("SELECT pmid FROM papers WHERE source='pubmed' AND pmid<>''").all().map(x=>'pmid:'+String(x.pmid));
  const matches=changed?await matchPubmedIds(s.query,ids):db.prepare('SELECT paper_id FROM paper_subscriptions WHERE subscription_id=?').all(id).map(x=>String(x.paper_id));
  let papers:PaperInput[]=[];
  if(changed){
@@ -332,7 +354,7 @@ app.use('/api',(_req,res)=>res.status(404).json({error:'接口不存在'}));
 app.use((req,res,next)=>{if(req.path.split('/').some(part=>part.startsWith('.')))return res.sendStatus(404);next();});
 if(!process.argv.includes('--dev')&&existsSync(path.join(root,'dist','index.html'))){app.use(express.static(path.join(root,'dist')));app.get('/{*splat}',(_req,res)=>res.sendFile(path.join(root,'dist','index.html')));}
 else{const {createServer}=await import('vite');const vite=await createServer({server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
-app.use((err:any,_req:any,res:any,_next:any)=>{if(err instanceof DocumentError)return res.status(err.status).json({error:err.message});if(err.type==='entity.too.large')return res.status(413).json({error:'上传文件不能超过 50 MB'});if(err instanceof z.ZodError)return res.status(400).json({error:'输入内容不符合要求，请检查字段'});console.error(err.message);res.status(500).json({error:err.name==='TimeoutError'?'请求超时，请稍后重试':err.message==='fetch failed'?'无法连接远端服务，请检查地址与网络后重试':err.message||'服务处理失败'});});
+app.use((err:any,_req:any,res:any,_next:any)=>{if(err instanceof InvalidLookupInput)return res.status(400).json({error:err.message});if(err instanceof DocumentError)return res.status(err.status).json({error:err.message});if(err.type==='entity.too.large')return res.status(413).json({error:'上传文件不能超过 50 MB'});if(err instanceof z.ZodError)return res.status(400).json({error:'输入内容不符合要求，请检查字段'});console.error(err.message);res.status(500).json({error:err.name==='TimeoutError'?'请求超时，请稍后重试':err.message==='fetch failed'?'无法连接远端服务，请检查地址与网络后重试':err.message||'服务处理失败'});});
 const port=Number(process.env.PORT||4317);
 app.listen(port,'127.0.0.1',()=>{console.log(`研邮 Paper-mail已启动：http://127.0.0.1:${port}`);void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);void refreshJournalMetadata().finally(()=>{prepareReading(db,root);void tick();});});
 let attemptedDate='';
@@ -350,7 +372,7 @@ function dailyDateClause(s:Record<string,string>){
  return pubmedDateClause(valid.at(-1)||today,today,'crdt');
 }
 async function refreshJournalMetadata(){
- const ids=db.prepare("SELECT id FROM papers WHERE source='pubmed' AND journal_issns='[]'").all().map(p=>String(p.id));
- if(!ids.length)return;
- try{const records=await fetchPubmedMetadata(ids);db.exec('BEGIN IMMEDIATE');try{for(const p of records){db.prepare('UPDATE papers SET journal_issns=? WHERE id=?').run(JSON.stringify(p.journal_issns||[]),p.id);enrichPaper(db,p.id);}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}catch(e:any){console.error('期刊 ISSN 更新失败：'+e.message);}
+ const ids=new Map(db.prepare("SELECT id,pmid FROM papers WHERE source='pubmed' AND pmid<>'' AND journal_issns='[]'").all().map(p=>['pmid:'+String(p.pmid),String(p.id)]));
+ if(!ids.size)return;
+ try{const records=await fetchPubmedMetadata([...ids.keys()]);db.exec('BEGIN IMMEDIATE');try{for(const p of records){const id=ids.get(p.id);if(!id)continue;db.prepare('UPDATE papers SET journal_issns=? WHERE id=?').run(JSON.stringify(p.journal_issns||[]),id);enrichPaper(db,id);}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}catch(e:any){console.error('期刊 ISSN 更新失败：'+e.message);}
 }

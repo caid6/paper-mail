@@ -4,7 +4,9 @@ import fs from 'node:fs/promises';
 const db=new Database.DatabaseSync('data/papers.sqlite');
 const rows=db.prepare(`select p.id,p.title,p.abstract,s.id as topic_id,s.name as topic_name,s.description,s.query
  from papers p join paper_subscriptions ps on ps.paper_id=p.id join subscriptions s on s.id=ps.subscription_id
- where p.source='pubmed' and p.impact_factor>=10 order by p.id,s.id`).all();
+ where p.source='pubmed' and p.impact_factor>=10 and not exists(
+   select 1 from paper_topic_overrides o where o.paper_id=p.id and o.subscription_id=s.id)
+ order by p.id,s.id`).all();
 db.close();
 const groups=[];for(let i=0;i<rows.length;i+=2)groups.push(rows.slice(i,i+2));
 const schema={type:'object',additionalProperties:false,properties:{reviews:{type:'array',items:{type:'object',additionalProperties:false,properties:{id:{type:'string'},topic_id:{type:'string'},verdict:{type:'string',enum:['relevant','borderline','irrelevant']},reason:{type:'string'},evidence:{type:'string'}},required:['id','topic_id','verdict','reason','evidence']}}},required:['reviews']};
@@ -20,9 +22,10 @@ if(process.argv.includes('--apply')){
  const applyDb=new Database.DatabaseSync('data/papers.sqlite');const now=new Date().toISOString();applyDb.exec('BEGIN IMMEDIATE');try{
   const save=applyDb.prepare("INSERT INTO relevance_reviews(paper_id,subscription_id,status,verdict,reason,evidence,model,reviewed_at,error) VALUES(?,?, 'complete',?,?,?,?,?,NULL) ON CONFLICT(paper_id,subscription_id) DO UPDATE SET status='complete',verdict=excluded.verdict,reason=excluded.reason,evidence=excluded.evidence,model=excluded.model,reviewed_at=excluded.reviewed_at,error=NULL");
   const remove=applyDb.prepare('DELETE FROM paper_subscriptions WHERE paper_id=? AND subscription_id=?');const affected=new Set();
-  for(const review of out){save.run(review.id,review.topic_id,review.verdict,review.reason,review.evidence,model,now);if(review.verdict==='irrelevant'){remove.run(review.id,review.topic_id);affected.add(review.id);}}
+  const manuallyEdited=applyDb.prepare('SELECT 1 FROM paper_topic_overrides WHERE paper_id=? AND subscription_id=?');
+  for(const review of out){if(manuallyEdited.get(review.id,review.topic_id))continue;save.run(review.id,review.topic_id,review.verdict,review.reason,review.evidence,model,now);if(review.verdict==='irrelevant'){remove.run(review.id,review.topic_id);affected.add(review.id);}}
   const archive=applyDb.prepare(`UPDATE papers SET archived=1, archive_origin='quality' WHERE id=?
-    AND archive_origin IS NOT 'manual'
+    AND archive_origin IS NOT 'manual' AND manual_added=0
     AND NOT EXISTS (SELECT 1 FROM paper_subscriptions WHERE paper_id=papers.id)`);
   for(const id of affected)archive.run(id);
   applyDb.exec('COMMIT');

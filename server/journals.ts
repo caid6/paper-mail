@@ -112,6 +112,9 @@ export function journalWhere(db: DB, alias = 'p') {
   )`);
   return predicates.join(' AND ') || '1=1';
 }
+export function mailboxJournalWhere(db:DB) {
+  return `(p.manual_added=1 OR (${journalWhere(db)}))`;
+}
 export function passesJournal(record: ReturnType<typeof matchJournal>, {threshold, ids}: JournalFilter) {
   return passesImpact(record, threshold) && (!ids.length || ids.includes(record.journal_id));
 }

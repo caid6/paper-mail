@@ -86,13 +86,15 @@ export function parseNatureFigures(html:string,doi:string){
  const figures:ParsedFigure[]=[];
  $('figure').each((_index,element)=>{
   const captionNode=$(element).find('figcaption [id^="Fig"],figcaption [data-test="figure-caption-text"]').first();
-  const caption=captionNode.text().replace(/\s+/g,' ').trim();
-  const label=captureNatureCaption(caption);
+  const heading=captionNode.text().replace(/\s+/g,' ').trim();
+  const label=captureNatureCaption(heading);
   if(!label)return;
+  const legend=$(element).find('[data-test="bottom-caption"]').text().replace(/\s+/g,' ').trim();
+  const caption=[heading,legend].filter(Boolean).join('\n\n');
   const img=$(element).find('img[src]').first(),src=img.attr('src');if(!src)return;
   const source=new URL(src.startsWith('//')?'https:'+src:src,canonical);
-  if(source.protocol!=='https:'||source.hostname!=='media.springernature.com'||!/^\/m\d+\//.test(source.pathname))return;
-  source.pathname=source.pathname.replace(/^\/m\d+\//,'/full/');
+  if(source.protocol!=='https:'||source.hostname!=='media.springernature.com'||!/^\/(?:m|lw)\d+\//.test(source.pathname))return;
+  source.pathname=source.pathname.replace(/^\/(?:m|lw)\d+\//,'/full/');
   const id=captionNode.attr('id')||label.replace(/\s+/g,'');
   const refs:string[]=[];
   $('a[href="#'+id+'"],a[href="#'+id.toLowerCase()+'"]').each((_refIndex,ref)=>{
@@ -333,11 +335,11 @@ export function queueFulltext(db:DB,paperId:string){
    WHERE fulltexts.status NOT IN ('loading','ready')`).run(paperId);
 }
 async function loadFulltext(db:DB,paperId:string,root:string){
- const p=db.prepare('SELECT id,pmcid FROM papers WHERE id=?').get(paperId);if(!p)throw new Error('论文不存在');
+ const p=db.prepare('SELECT id,pmcid,pmid FROM papers WHERE id=?').get(paperId);if(!p)throw new Error('论文不存在');
  if(!p.pmcid){db.prepare("INSERT INTO fulltexts(paper_id,status,error) VALUES(?,'unavailable','没有可访问的 PMC 全文') ON CONFLICT(paper_id) DO UPDATE SET status=excluded.status,error=excluded.error").run(paperId);return;}
  db.prepare("UPDATE fulltexts SET status='loading',error=NULL WHERE paper_id=?").run(paperId);
  try{
-  const parsed=await fetchPMC(String(p.pmcid),paperId.replace('pmid:',''));
+  const parsed=await fetchPMC(String(p.pmcid),String(p.pmid));
   db.exec('BEGIN IMMEDIATE');try{
    db.prepare("DELETE FROM figures WHERE paper_id=? AND origin='pmc'").run(paperId);
    for(const f of parsed.figures){const id=createHash('sha256').update(paperId+':'+f.id).digest('hex').slice(0,32);db.prepare("INSERT INTO figures(id,paper_id,position,label,caption,context,alt,image_url,source_url,origin) VALUES(?,?,?,?,?,?,?,?,?,'pmc')").run(id,paperId,f.position,f.label,f.caption,f.context,f.alt,f.image_url,f.source_url);}

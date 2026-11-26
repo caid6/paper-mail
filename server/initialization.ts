@@ -9,25 +9,27 @@ export function replaceLibrary(db:DB,groups:TopicMatches[],options:Initializatio
  let added=0;
  db.exec('BEGIN IMMEDIATE');
  try{
-  const previous=Number(db.prepare("SELECT COUNT(*) AS n FROM papers WHERE source='pubmed' AND in_library=1").get()!.n);
-  db.prepare("UPDATE papers SET in_library=0 WHERE source='pubmed' AND in_library=1").run();
-  const activate=db.prepare('UPDATE papers SET in_library=0 WHERE id=?');
-  const unlink=db.prepare('DELETE FROM paper_subscriptions WHERE paper_id=?');
+  const previous=Number(db.prepare("SELECT COUNT(*) AS n FROM papers WHERE (source='pubmed' OR manual_added=1) AND in_library=1").get()!.n);
+  db.prepare("UPDATE papers SET in_library=0 WHERE source='pubmed' AND in_library=1 AND manual_added=0").run();
+  const unlink=db.prepare(`DELETE FROM paper_subscriptions WHERE paper_id=?
+    AND NOT EXISTS(SELECT 1 FROM paper_topic_overrides o
+      WHERE o.paper_id=paper_subscriptions.paper_id AND o.subscription_id=paper_subscriptions.subscription_id)`);
   for(const group of groups){
    for(const paper of group.papers){
-    if(!matched.has(paper.id)){
-     if(upsertPaperRecord(db,paper,now))added++;
-     matched.add(paper.id);
-     activate.run(paper.id);
-     unlink.run(paper.id);
+    const stored=upsertPaperRecord(db,paper,now);
+    if(stored.added)added++;
+    if(!matched.has(stored.id)){
+     matched.add(stored.id);
+     unlink.run(stored.id);
     }
-    linkPaper(db,paper.id,group.subscriptionId,options.quality_enabled);
+    linkPaper(db,stored.id,group.subscriptionId,options.quality_enabled);
    }
   }
   const activateMatched=db.prepare(`UPDATE papers SET in_library=1 WHERE id=? AND source='pubmed'
-    AND EXISTS(SELECT 1 FROM paper_subscriptions WHERE paper_id=? )`);
-  for(const paperId of matched)activateMatched.run(paperId,paperId);
-  const inbox=Number(db.prepare("SELECT COUNT(*) AS n FROM papers WHERE source='pubmed' AND in_library=1 AND archived=0").get()!.n);
+    AND (EXISTS(SELECT 1 FROM paper_subscriptions WHERE paper_id=papers.id)
+      OR EXISTS(SELECT 1 FROM paper_topic_overrides WHERE paper_id=papers.id))`);
+  for(const paperId of matched)activateMatched.run(paperId);
+  const inbox=Number(db.prepare("SELECT COUNT(*) AS n FROM papers WHERE (source='pubmed' OR manual_added=1) AND in_library=1 AND archived=0").get()!.n);
   const values={initialize_status:'complete',initialize_start:options.start,initialize_end:options.end,initialize_date_field:options.date_field,
     initialize_matched:matched.size,initialize_inbox:inbox,initialize_previous:previous,initialize_finished_at:now,
     library_initialized_on:day,last_sync:now,min_impact_factor:options.min_impact_factor??'',min_impact_operator:options.min_impact_operator??'gte',quality_enabled:options.quality_enabled,
