@@ -4,7 +4,7 @@
 
 ## 1. 项目目标
 
-Paper-mail 是一个运行在本机的 PubMed 文献收件箱。它按用户设置的方向收取论文，也可手动检索添加单篇文献。它提供摘要、全文链接、PDF 阅读、星标、归档和笔记。配置模型后还可以生成中文导读、解读主图并对论文全文提问。
+Paper-mail 是一个运行在本机的 PubMed 文献收件箱。它按用户设置的方向收取论文，也可手动检索或上传 PDF 添加单篇文献。它提供摘要、全文链接、PDF 阅读、星标、归档和笔记。配置模型后还可以生成中文导读、解读主图并对论文全文提问。
 
 产品主流程是：
 
@@ -17,7 +17,7 @@ Paper-mail 是一个运行在本机的 PubMed 文献收件箱。它按用户设�
 
 ## 2. 当前版本与运行状态
 
-- 源码版本：`2.16.4`
+- 源码版本：`2.17.0`
 - 运行地址：<http://127.0.0.1:4317>
 - 技术栈：React 19 + TypeScript + Vite；Node.js + Express 5；Node 内置 SQLite。
 - 全文准备在建库、收信或手动添加论文后由本机服务自动派发。PDF 下载、全页文本解析、PMC 正文、Nature 公开文章图表和 PDF 主图解读分别排队，不同全文来源独立推进。升级时也会派发当前邮箱未准备或此前失败的文献。
@@ -26,7 +26,7 @@ Paper-mail 是一个运行在本机的 PubMed 文献收件箱。它按用户设�
 - 当前中文题名：单独保存并排队翻译，不依赖 PubMed 是否提供摘要；已完成的中文导读会迁移其中的中文题名。失败时在阅读页显示状态与重试入口。
 - 当前阅读交互：PDF 连续滚动；普通全文问答，Enter 发送、Shift+Enter 换行。
 - 图文解读采用精简结构和 14px 正文；全屏图文对照支持单独滚动文字、图片缩放和逐图切换。网页版和桌面版共用组件与模型生成规则。
-- macOS 桌面版采用 Electron，发布 Apple Silicon DMG，内置 Python PDF 运行环境。默认数据目录为 `~/Library/Application Support/Paper-mail/`，可在设置中迁移；网页版默认沿用项目内数据。
+- 桌面版采用 Electron，macOS 发布 Apple Silicon DMG，Windows 发布 x64 NSIS 安装包；两端都内置 Python PDF 运行环境。默认数据目录分别为 `~/Library/Application Support/Paper-mail/` 和 `%APPDATA%/Paper-mail`，可在设置中迁移；网页版默认沿用项目内数据。
 - 模型服务由每位用户在本机配置。服务地址、模型和密钥从本机 `.env` 或进程环境读取。
 - 每日收取的默认时间为北京时间 `07:30`，每个方向默认检查 `10` 篇；用户可以在设置中修改。
 - 全新数据库的研究方向和期刊筛选均为空。期刊目录采用 2026 年发布的 2025 JIF，并应用当年官方修正。已有库沿用本机保存的方向与筛选条件。
@@ -81,6 +81,8 @@ server/
 tests/                     Node 测试，运行 npm test
 assets/journals/           影响因子和分区资料
 scripts/service.mjs        macOS LaunchAgent 安装、停止、状态
+scripts/build-pdf-runtime.mjs  为当前 macOS/Windows 构建带清单的 Python PDF 运行时
+scripts/assert-platform.mjs  校验桌面安装包构建所在平台
 scripts/quality_audit.mjs  使用配置的模型对论文方向命中关系做可追溯质控
 scripts/openalex_sources.py  按 DOI 与 OA 标记筛选 OpenAlex 全文链接
 scripts/pdf_identity.py     检查 PDF 文件和 DOI/完整标题证据
@@ -121,6 +123,15 @@ npm run dev
 ```
 
 生产模式会读取 `dist/`。修改前端后必须 `npm run build` 并重启 LaunchAgent，浏览器再刷新；否则用户可能仍看到旧 bundle。
+
+Windows 桌面版在 Windows 10/11 x64 环境构建：
+
+```powershell
+npm ci
+npm run desktop:dist:win
+```
+
+构建前需要安装 Node.js 22.13+ 和 uv。`scripts/build-pdf-runtime.mjs` 会将 Python、PDF 依赖及 `runtime.json` 写入 `build/pdf-runtime/`，Electron 主进程按清单定位解释器，不依赖 Windows 的 Python 安装位置。最终 NSIS 安装包位于 `release/`。
 
 全新数据库首次打开时显示新手指引，可分别进入 API 与模型、研究方向、文献筛选和每日推送。关闭配置页可回到指引，关闭指引后在 SQLite 记录 `onboarding_seen`。顶部问号可随时重新打开。已有研究方向或论文的库可直接进入收件箱。
 
@@ -248,7 +259,8 @@ AI 解析所选系列、JCR 学科或明确刊名、排除项及明确给出的�
 | GET/POST | `/api/papers/:id/download` | 兼容旧版 PDF 状态/启动接口，当前 UI 不再提供手动重试 |
 | GET | `/api/papers/:id/document` | 下载与逐页解析状态，包含无文本页码；不返回文件路径或全文文本 |
 | POST | `/api/papers/:id/document/ensure` | 显式准备 PDF 的兼容 API；正常阅读页面只 GET 状态 |
-| POST | `/api/papers/:id/document/upload` | 自动下载失败后上传原文，Content-Type: application/pdf，原始字节体，上限 50 MB |
+| POST | `/api/papers/upload` | 直接上传 PDF 创建或恢复文献，Content-Type: application/pdf，原始字节体，上限 50 MB；自动提取元数据、全文索引并进入导读/图文队列 |
+| POST | `/api/papers/:id/document/upload` | 自动下载失败后上传同篇原文，Content-Type: application/pdf，原始字节体，上限 50 MB |
 | GET/POST | `/api/papers/:id/chat` | 读取当前 PDF 对话/整篇全文普通对话；answer 为 Markdown 字符串 |
 | POST | `/api/papers/:id/chat/reset` | 清空当前 PDF 对话 |
 | GET | `/api/papers/:id/pdf` | 打开或下载已验证为可解析的 PDF 文件 |
@@ -288,7 +300,7 @@ JATS graphic 的文件名必须与 media_urls 完全匹配，不按扩展名或�
 
 `DownloadPaper` 和 `Figures` 默认读取状态与缓存。自动获取失败时，阅读页提供出版社原文与上传入口，技术原因可在「下载诊断」展开。PDF 环境缺失时，未处理任务的有效状态为 `environment_required`。安装依赖并重启即可恢复。图表缓存和模型解读分别记录进度，缓存后的图片等待模型时返回 `unconfigured`。收件箱底部按论文统计下载、解析、解读和等待模型，同一论文可处于多个阶段。接口的 `readingPreparation.pending` 只计可执行的去重任务。PDF 阅读器使用本地 PDF.js worker 和逐页文件渲染。问答需文字解析成功并配置模型。
 
-自动下载成功后异步提取所有页面，提取任务按论文去重。手工上传同样先通过 `pdf_identity.py` 核对 DOI 或完整标题，再由 pypdf 提取每一页。PDF 图文提取使用 `requirements.txt` 中的 PyMuPDF。最多 50 MB / 1000 页、解析超时 120 秒。空白页保持空文本且返回页码，不用摘要代替全文，不做 OCR。上传验证完成后持久保存文件和逐页文本；后台失败原因可以展开查看。文件在本地缺失时，明确标为 `interrupted` 并允许上传。
+自动下载成功后异步提取所有页面，提取任务按论文去重。手工添加入口上传 PDF 时先读取 PDF 元数据和正文中的 DOI/PMID，能匹配 PubMed 或 Crossref 时补齐文献字段；没有远端记录时使用 PDF 元数据和正文建立本地文献记录。直接上传的 PDF 与逐页索引随后进入中文导读、主图提取和图文解读队列。自动下载失败后上传同篇原文仍通过 `pdf_identity.py` 核对 DOI 或完整标题，再由 pypdf 提取每一页。PDF 图文提取使用 `requirements.txt` 中的 PyMuPDF。最多 50 MB / 1000 页、解析超时 120 秒。空白页保持空文本且返回页码，不用摘要代替全文，不做 OCR。上传验证完成后持久保存文件和逐页文本；后台失败原因可以展开查看。文件在本地缺失时，明确标为 `interrupted` 并允许上传。
 
 问答使用请求发起时的 `activeAI()` 当前文字模型。每次发出整篇逐页提取文本、本篇当前 PDF 完整历史与问题，直接调用普通对话 API：OpenAI 兼容接口不传 `response_format`，Gemini 不传 JSON Schema 或 JSON MIME；回答是原始 Markdown 文本。不做向量检索、片段筛选、强制引用、页码/行号校验、固定段落格式或摘要替代；不再设置 240000 字符的应用级输入门槛，实际上下文限制以模型服务为准。输出最多 20000 tokens，调用失败或未完成会明确报错，不保存不完整回答、不切换模型。正文像素的按需渲染只影响浏览器内存，AI 请求仍包含全部页面文本。
 
@@ -338,6 +350,13 @@ npm run build
 不要把密钥、数据库、服务日志或浏览器个人数据写入源码包。不要通过伪造模型名、论文日期或影响因子来掩盖数据缺失。
 
 ## 13. 变更记录
+
+### 2.17.0（2026-11-28）
+
+- 增加 Windows 10/11 x64 Electron 桌面版和 NSIS 安装包配置，安装包提供桌面与开始菜单快捷方式，并保留用户数据目录。
+- PDF 运行时构建同时支持 macOS 与 Windows，生成 `runtime.json` 清单；Electron 主进程按当前平台和架构校验并加载 Python 与依赖，Windows 安装后无需单独安装 Python。
+- 增加 Windows 图标和 `desktop:dir:win`、`desktop:dist:win` 构建命令，补充 Windows 构建与数据目录说明。
+- 已完成 TypeScript/Vite 构建、macOS 目录版打包和本机 PDF 运行时校验；Windows NSIS 安装包需要在 Windows x64 主机生成。
 
 ### 2.16.4（2026-11-27）
 

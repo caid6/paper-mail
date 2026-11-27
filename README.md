@@ -4,7 +4,7 @@
 
 研邮是一个在自己电脑上运行的 PubMed 文献收件箱，适合需要持续跟进专科研究的临床医生、研究生和生物医学研究者。设好关注的课题和期刊，每天打开收件箱就能看有哪些新论文。
 
-[下载 macOS 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg) · [全部版本](https://github.com/caid6/paper-mail/releases) · [功能介绍](#功能介绍) · [安装与启动](#安装与启动)
+[下载 macOS 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg) · [Windows 桌面版构建说明](#windows-桌面版) · [全部版本](https://github.com/caid6/paper-mail/releases) · [功能介绍](#功能介绍) · [安装与启动](#安装与启动)
 
 [![研邮主界面，左侧是研究方向和文件夹，中间是论文收件箱，右侧是论文摘要和 PDF 阅读入口](docs/images/paper-mail-inbox.webp)](docs/images/paper-mail-inbox.webp)
 
@@ -14,7 +14,7 @@
 
 - **订阅研究方向。** 用自然语言描述课题，让 AI 生成可编辑的 PubMed 检索式，或直接填入自己的检索式。保存前可查看 PubMed 的实际匹配篇数。
 - **按条件收取新论文。** 按期刊和影响因子筛选，按需启用 AI 相关性复核。可以先回溯一段日期内的文献，再每天定时收取。多方向命中的论文只收一次，同时保留对应标签。
-- **检索添加单篇论文。** 输入题目、PMID 或 DOI，在结果里点添加。PubMed 暂无记录的文章也可以通过 Crossref 检索。
+- **手工添加论文。** 输入题目、PMID 或 DOI 检索添加，也可以直接上传 PDF。上传后自动提取正文、建立本地索引，并进入中文导读和图文解读队列。
 - **像处理邮件一样整理文献。** 浏览未读论文、给重要文献加星标、归档已处理的论文、编辑论文的研究方向标签，并在阅读时写笔记。
 - **读摘要、看主图和全文。** 直接查看作者摘要和可用的主图。获取或上传 PDF 后，可在站内阅读。配置模型后，还可以生成中文导读和图文解读，或就全文提问。
 
@@ -34,6 +34,17 @@ npm ci
 npm run desktop:dist
 ```
 开发时可运行 `npm run desktop:dev` 启动桌面窗口。自行打包的应用尚未签名和公证，适合在当前 Mac 上运行或内部测试。
+
+### Windows 桌面版
+
+在 Windows 机器安装 [Node.js 22.13+](https://nodejs.org/en/download) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后在项目目录执行：
+
+```powershell
+npm ci
+npm run desktop:dist:win
+```
+
+安装包生成在 `release/Paper-mail-2.17.0-Setup-x64.exe`。打包过程会下载并内置 Python 3.12、PyMuPDF、pypdf 和证书，安装后的用户无需另装 Python。开发时可运行 `npm run desktop:dev`；若需要 PDF 处理，先安装 Python 3.11+ 并运行 `npm run setup:python`。Windows 桌面版的文献库、PDF 和模型配置默认保存在 `%APPDATA%/Paper-mail`，也可以在「设置 → 数据与导出」迁移到其他文件夹。当前构建未配置 Windows 代码签名，内部测试时系统可能显示未知发布者提示。
 
 ```sh
 mkdir -p ~/Applications
@@ -67,12 +78,12 @@ npm start
 
 ## 阅读论文
 
-在收件箱右上方点 **检索添加**，输入题目、PMID、DOI 或 DOI 链接，核对结果后点击 **添加**。论文按收信时间入箱，独立于订阅和影响因子设置。研邮会在后台尝试下载公开 PDF，并在作者摘要和模型可用时生成中文导读。
+在收件箱右上方点 **手工添加**。选择 **检索论文** 时输入题目、PMID、DOI 或 DOI 链接，核对结果后点击 **添加**；选择 **上传 PDF** 时直接选择本地论文文件。上传后会自动识别文献身份、保存本地 PDF、提取逐页正文并建立索引，随后生成中文导读和图文解读。论文按收信时间入箱，独立于订阅和影响因子设置。检索添加的论文仍会在后台尝试下载公开 PDF。
 
 - **中文导读。** 收件箱按 **收信时间** 倒序，每页默认显示 50 篇。点开邮件后，右侧标注论文发表日期，并可阅读研究问题、核心方法、主要发现和证据局限。打开 **原文摘要** 可以核对作者的表述。
 - **图文解读。** 按核心结论、读图要点和子图说明解读可用的 PMC 主图、Nature Portfolio 公开主图或本机 PDF 主图，正文与收件箱采用同样的 14px 字号。点 **全屏阅读** 或直接点击图片，可同时查看原图和中文解读，支持切换主图、缩放图片；按 Esc 退出。作者图注可展开查看，已有内容可点 **重新解读** 按新的精简格式生成。使用 PDF 时，显示含主图的整页，以保留子图和图注。
 - **全文问答。** 论文有本机 PDF 时，点 **阅读文献**，一边滚动读全文，一边提问。例如可以问「作者在哪些数据上做了外部验证？」问答使用 PDF 中可提取的文字。按 Enter 发送，按 Shift+Enter 换行。
-- **上传 PDF。** 自动获取不可用或失败后，点 **上传 PDF** 添加同一篇论文的文件，最大 50 MB、1000 页。也能从阅读区直接打开 PubMed 或出版社原文。
+- **上传 PDF。** 可以在 **手工添加 → 上传 PDF** 中直接导入新文献，也可以在自动获取不可用或失败后上传同一篇论文的文件。文件最大 50 MB、1000 页，PDF 和逐页索引保存在本机。也能从阅读区直接打开 PubMed 或出版社原文。
 
 在论文详情点 **添加标签** 或 **编辑标签**，勾选一个或多个研究方向，也可以取消勾选来纠正归类。后续收信、更新订阅和相关性质控都会保留这些手动选择。
 
@@ -84,9 +95,9 @@ npm start
 
 **全文准备。** 项目自带公开 PDF 下载器，可查找 PMC、Europe PMC、受支持的出版社公开全文和 OpenAlex 的开放版本。下载后会核对 DOI 或标题。遇到付费、需登录或自动下载未成功的论文，可从出版社打开原文或上传同篇 PDF。机构访问取决于所在机构的授权和本机配置。PDF 有可提取的文字时才支持全文问答，纯扫描件可以阅读。[全文准备与问答实现](DEVELOPMENT.md#站内阅读与问答)
 
-**安装与连接排查。** macOS 桌面版自带 PDF 运行环境；源码版或 `desktop:dev` 报 PDF 环境未就绪时，运行 `npm run setup:python` 后重启服务。默认使用项目的 `.venv`，也可以通过本机 `.env` 的 `PAPER_DOWNLOAD_PYTHON` 指定已有 Python 环境。PubMed 会分别提示 DNS、网络超时和 HTTP 错误。有代理的环境可配置 `HTTPS_PROXY` 和 `NO_PROXY`。模型设置中的 **测试连接** 会分别检查 JSON 和图像输入，并提示密钥、权限或额度错误。
+**安装与连接排查。** macOS 和 Windows 桌面安装包自带 PDF 运行环境；源码版或 `desktop:dev` 报 PDF 环境未就绪时，运行 `npm run setup:python` 后重启服务。默认使用项目的 `.venv`，也可以通过本机 `.env` 的 `PAPER_DOWNLOAD_PYTHON` 指定已有 Python 环境。PubMed 会分别提示 DNS、网络超时和 HTTP 错误。有代理的环境可配置 `HTTPS_PROXY` 和 `NO_PROXY`。模型设置中的 **测试连接** 会分别检查 JSON 和图像输入，并提示密钥、权限或额度错误。
 
-**数据存放。** 服务只监听 `127.0.0.1`。网页版默认使用项目目录，桌面版默认使用 `~/Library/Application Support/Paper-mail/`：文献库在 `data/papers.sqlite`，PDF 在 `data/downloads/`，主图在 `data/figures/`，模型配置在 `.env`。两种界面均可在「设置 → 数据与导出」查看完整路径；桌面版还可选择新位置迁移数据，并在论文详情点「打开文件夹」定位本机 PDF。PDF 不会上传到 Paper-mail 云端；选择同步盘目录时，第三方同步软件可能同步这些文件。使用 AI 功能时，相关标题、摘要、PDF 提取文本或主图会发送到你配置的模型服务。
+**数据存放。** 服务只监听 `127.0.0.1`。网页版默认使用项目目录，桌面版默认使用 macOS 的 `~/Library/Application Support/Paper-mail/` 或 Windows 的 `%APPDATA%/Paper-mail`：文献库在 `data/papers.sqlite`，PDF 在 `data/downloads/`，主图在 `data/figures/`，模型配置在 `.env`。两种界面均可在「设置 → 数据与导出」查看完整路径；桌面版还可选择新位置迁移数据，并在论文详情点「打开文件夹」定位本机 PDF。PDF 不会上传到 Paper-mail 云端；选择同步盘目录时，第三方同步软件可能同步这些文件。使用 AI 功能时，相关标题、摘要、PDF 提取文本或主图会发送到你配置的模型服务。
 
 **期刊指标。** 采用 2026 年发布的 **2025 JIF** 总表及 10 月修正，优先按 ISSN 匹配。开启影响因子筛选后，只收取并显示有可核验 JIF 且达到门槛的论文。[JCR 发布公告](https://clarivate.com/news/clarivate-releases-journal-citation-reports-2026/) · [官方修正表](https://journalcitationreports.zendesk.com/hc/en-gb/articles/47808147130129-2026)
 

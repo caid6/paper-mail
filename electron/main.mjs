@@ -4,15 +4,26 @@ import { cp as cpAsync } from 'node:fs/promises';
 import path from 'node:path';
 
 app.setName('Paper-mail');
+if (process.platform === 'win32') app.setAppUserModelId('com.caid6.papermail');
+
+function esbuildPlatformPackage() {
+  if (!['darwin', 'win32', 'linux'].includes(process.platform)) {
+    throw new Error(`不支持的桌面平台：${process.platform}`);
+  }
+  if (!['arm64', 'x64', 'ia32'].includes(process.arch)) {
+    throw new Error(`不支持的桌面架构：${process.arch}`);
+  }
+  return `${process.platform}-${process.arch}`;
+}
+
 if (app.isPackaged) {
   process.env.ESBUILD_BINARY_PATH = path.join(
     process.resourcesPath,
     'app.asar.unpacked',
     'node_modules',
     '@esbuild',
-    `darwin-${process.arch}`,
-    'bin',
-    'esbuild',
+    esbuildPlatformPackage(),
+    ...(process.platform === 'win32' ? ['esbuild.exe'] : ['bin', 'esbuild']),
   );
 }
 const { register } = await import('tsx/esm/api');
@@ -28,6 +39,38 @@ let electronDataRoot;
 let storagePreferencePath;
 let scriptRoot;
 let backendStopped = false;
+
+function resolveContainedPath(root, relativePath, label) {
+  if (typeof relativePath !== 'string' || path.isAbsolute(relativePath)) {
+    throw new Error(`PDF 运行时清单中的${label}路径无效`);
+  }
+  const resolved = path.resolve(root, relativePath);
+  if (!pathContains(root, resolved)) throw new Error(`PDF 运行时清单中的${label}路径越界`);
+  return resolved;
+}
+
+function configurePackagedPdfRuntime() {
+  const runtimeRoot = path.join(process.resourcesPath, 'pdf-runtime');
+  const manifestPath = path.join(runtimeRoot, 'runtime.json');
+  if (!existsSync(manifestPath)) throw new Error('安装包缺少 PDF 运行时清单，请重新安装 Paper-mail。');
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
+  } catch {
+    throw new Error('PDF 运行时清单无法读取，请重新安装 Paper-mail。');
+  }
+  if (manifest.platform !== process.platform || manifest.architecture !== process.arch) {
+    throw new Error('安装包中的 PDF 运行时与当前系统架构不匹配，请下载对应版本。');
+  }
+  const python = resolveContainedPath(runtimeRoot, manifest.pythonExecutable, 'Python');
+  const sitePackages = resolveContainedPath(runtimeRoot, manifest.sitePackages, '依赖');
+  if (!existsSync(python) || !existsSync(sitePackages)) {
+    throw new Error('安装包中的 PDF 运行时不完整，请重新安装 Paper-mail。');
+  }
+  process.env.PAPER_DOWNLOAD_PYTHON = python;
+  process.env.PYTHONPATH = [sitePackages, process.env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+}
+
 if (!hasInstanceLock) {
   app.quit();
 } else {
@@ -75,20 +118,7 @@ async function startApplication() {
   process.env.PAPER_MAIL_USER_DATA_DIR = dataRoot;
   process.env.PAPER_MAIL_SCRIPT_ROOT = scriptRoot;
   process.env.DOTENV_CONFIG_PATH = path.join(dataRoot, '.env');
-  if (app.isPackaged) {
-    const pythonArchitecture = process.arch === 'arm64' ? 'aarch64' : 'x86_64';
-    const pdfRuntime = path.join(process.resourcesPath, 'pdf-runtime');
-    process.env.PAPER_DOWNLOAD_PYTHON = path.join(
-      pdfRuntime,
-      'python',
-      `cpython-3.12.13-macos-${pythonArchitecture}-none`,
-      'bin',
-      'python3.12',
-    );
-    process.env.PYTHONPATH = [path.join(pdfRuntime, 'site-packages'), process.env.PYTHONPATH]
-      .filter(Boolean)
-      .join(path.delimiter);
-  }
+  if (app.isPackaged) configurePackagedPdfRuntime();
   process.env.PORT = '0';
 
   installApplicationMenu();

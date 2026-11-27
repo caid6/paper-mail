@@ -1,7 +1,7 @@
 {
   "name": "paper-morning",
   "productName": "Paper-mail",
-  "version": "2.16.4",
+  "version": "2.17.0",
   "private": true,
   "type": "module",
   "main": "electron/main.mjs",
@@ -10,8 +10,10 @@
     "build": "tsc --noEmit && vite build",
     "start": "tsx server/index.ts",
     "desktop:dev": "npm run build && electron .",
-    "desktop:dir": "npm run build && node scripts/build-pdf-runtime.mjs && electron-builder --mac dir",
+    "desktop:dir": "node scripts/assert-platform.mjs darwin && npm run build && node scripts/build-pdf-runtime.mjs && electron-builder --mac dir",
     "desktop:dist": "npm run desktop:dir && node scripts/make-dmg.mjs",
+    "desktop:dir:win": "node scripts/assert-platform.mjs win32 && npm run build && node scripts/build-pdf-runtime.mjs && electron-builder --win dir --x64 --publish never",
+    "desktop:dist:win": "node scripts/assert-platform.mjs win32 && npm run build && node scripts/build-pdf-runtime.mjs && electron-builder --win nsis --x64 --publish never",
     "test": "node scripts/test.mjs",
     "setup:python": "node scripts/setup-python.mjs"
   },
@@ -66,7 +68,8 @@
     "asarUnpack": [
       "scripts/**/*.mjs",
       "scripts/**/*.py",
-      "requirements.txt"
+      "requirements.txt",
+      "node_modules/@esbuild/**"
     ],
     "mac": {
       "icon": "assets/paper-mail.icns",
@@ -76,6 +79,26 @@
         "dmg"
       ],
       "artifactName": "Paper-mail-${version}-${arch}.${ext}"
+    },
+    "win": {
+      "icon": "assets/paper-mail.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "artifactName": "Paper-mail-${version}-Setup-${arch}.${ext}"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     }
   }
 }

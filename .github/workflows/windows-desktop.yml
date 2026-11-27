@@ -1,0 +1,110 @@
+name: Windows desktop
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+    paths:
+      - 'electron/**'
+      - 'scripts/**'
+      - 'server/**'
+      - 'src/**'
+      - 'assets/paper-mail.ico'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'requirements-desktop.txt'
+      - '.github/workflows/windows-desktop.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke-test:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v10.4.0
+
+      - name: Install dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Build Windows installer
+        run: npm run desktop:dist:win
+
+      - name: Verify bundled PDF runtime
+        shell: pwsh
+        run: |
+          $runtime = Get-Content 'build/pdf-runtime/runtime.json' | ConvertFrom-Json
+          if ($runtime.platform -ne 'win32' -or $runtime.architecture -ne 'x64') {
+            throw "Unexpected PDF runtime: $($runtime.platform)-$($runtime.architecture)"
+          }
+          $python = Join-Path 'build/pdf-runtime' $runtime.pythonExecutable
+          $env:PYTHONPATH = (Resolve-Path (Join-Path 'build/pdf-runtime' $runtime.sitePackages)).Path
+          & $python -c 'import certifi, pymupdf, pypdf'
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled PDF runtime import failed' }
+
+      - name: Smoke test packaged application
+        shell: pwsh
+        run: |
+          $app = Join-Path $pwd 'release/win-unpacked/Paper-mail.exe'
+          if (-not (Test-Path $app)) { throw "Packaged application not found: $app" }
+          $data = Join-Path $env:RUNNER_TEMP 'paper-mail-smoke-data'
+          New-Item -ItemType Directory -Force -Path $data | Out-Null
+          $stdout = Join-Path $env:RUNNER_TEMP 'paper-mail-smoke.stdout.log'
+          $stderr = Join-Path $env:RUNNER_TEMP 'paper-mail-smoke.stderr.log'
+          $previousDataRoot = $env:PAPER_MAIL_USER_DATA_DIR
+          $env:PAPER_MAIL_USER_DATA_DIR = $data
+          $debugPort = 9222
+          $process = Start-Process -FilePath $app -ArgumentList @('--disable-gpu', '--no-sandbox', "--remote-debugging-port=$debugPort") -WorkingDirectory (Split-Path $app) -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          try {
+            $health = $null
+            $port = $null
+            for ($attempt = 0; $attempt -lt 60 -and -not $health; $attempt++) {
+              Start-Sleep -Seconds 1
+              if ($process.HasExited) { throw "Paper-mail exited with code $($process.ExitCode)" }
+              $listener = Get-NetTCPConnection -State Listen -OwningProcess $process.Id -ErrorAction SilentlyContinue | Select-Object -First 1
+              if (-not $listener) { continue }
+              $port = $listener.LocalPort
+              try { $health = Invoke-RestMethod "http://127.0.0.1:$port/api/health" -TimeoutSec 3 } catch { $health = $null }
+            }
+            if (-not $health -or $health.app -ne 'paper-mail') {
+              $out = if (Test-Path $stdout) { Get-Content $stdout -Raw } else { '' }
+              $err = if (Test-Path $stderr) { Get-Content $stderr -Raw } else { '' }
+              throw "Packaged application did not expose its local service.`nSTDOUT:`n$out`nSTDERR:`n$err"
+            }
+            $state = Invoke-RestMethod "http://127.0.0.1:$port/api/state"
+            if (-not $state.download.available) { throw 'Packaged application did not enable its PDF runtime' }
+            if (-not (Test-Path (Join-Path $data 'data/papers.sqlite'))) { throw 'Packaged application did not initialize its data directory' }
+            $page = $null
+            for ($attempt = 0; $attempt -lt 20 -and -not $page; $attempt++) {
+              Start-Sleep -Milliseconds 500
+              try {
+                $pages = @(Invoke-RestMethod "http://127.0.0.1:$debugPort/json/list" -TimeoutSec 3)
+                $page = $pages | Where-Object { $_.type -eq 'page' -and $_.url -like 'http://127.0.0.1:*' } | Select-Object -First 1
+              } catch { $page = $null }
+            }
+            if (-not $page -or $page.title -notmatch '研邮|Paper-mail') { throw 'Packaged renderer did not load the Paper-mail page' }
+          } finally {
+            if (-not $process.HasExited) { Stop-Process -Id $process.Id -Force }
+            if ($null -eq $previousDataRoot) { Remove-Item Env:PAPER_MAIL_USER_DATA_DIR -ErrorAction SilentlyContinue } else { $env:PAPER_MAIL_USER_DATA_DIR = $previousDataRoot }
+          }
+
+      - name: Upload Windows installer
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: Paper-mail-Windows-x64
+          path: release/Paper-mail-*-Setup-x64.exe
+          if-no-files-found: ignore
