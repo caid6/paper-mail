@@ -3,10 +3,10 @@ import type {DB} from './core.ts';
 import {downloadedPath,downloadInfo,pumpDownloads} from './downloads.ts';
 import {markMissingDownload,pumpDocumentIndexes} from './documents.ts';
 import {pumpPublisherFigures,pumpPDFFigureIndexes,pumpFigures,pumpFulltexts,needsPDFFigureIndex} from './figures.ts';
-import {readingScope} from './reading-scope.ts';
+import {downloadScope,readingScope} from './reading-scope.ts';
 
 export function queueReadingPreparation(db:DB){
- const scope=readingScope(db);
+ const scope=downloadScope(db);
  db.prepare(`INSERT OR IGNORE INTO downloads(paper_id,status,created_at,automatic)
    SELECT p.id,'pending',?,1 FROM papers p WHERE ${scope}`).run(new Date().toISOString());
  db.exec(`INSERT INTO fulltexts(paper_id,status,automatic)

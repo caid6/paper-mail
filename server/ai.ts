@@ -3,7 +3,7 @@ import {digestSchema,type PaperInput,type Digest} from './core.ts';
 export type AIConfig={provider:'gemini'|'compatible';base_url:string;model:string;figure_model:string;key:string};
 const geminiBaseUrl='https://generativelanguage.googleapis.com/v1beta';
 export function activeAI():AIConfig{
- const provider=process.env.AI_PROVIDER==='compatible'?'compatible':'gemini';
+ const provider=process.env.AI_PROVIDER==='gemini'?'gemini':'compatible';
  const model=process.env.AI_MODEL||(provider==='gemini'?process.env.GEMINI_MODEL:'')||'';
  return {
   provider,
@@ -116,5 +116,20 @@ export async function listModels(config:AIConfig){
  if(!models.length)throw new Error('此服务没有返回可用模型，请检查密钥权限与服务地址');
  return [...new Set(models)].sort();
 }
-export const figureAnalysisSchema=z.object({title_zh:z.string().min(1),overview:z.string().min(1),panels:z.array(z.object({label:z.string(),explanation:z.string()})),takeaway:z.string().min(1),caveats:z.array(z.string()).min(1)});
-export function generateFigureAnalysis(figure:{label:string;caption:string;context:string;alt:string},paper:PaperInput,image:{data:Buffer;type:string}){return jsonCompletion(figureAnalysisSchema,'你是医学论文图表解读者。依据实际图像、作者图注以及全文中引用该图的段落，逐图用中文解释。必须先辨认图的类型、坐标/图例/组别和可见信息。不要补写图中无法辨认的数字，不把示意图解读成实验结果，不声称无图像证据的统计差异。title_zh概括这张图；overview说明图怎么读；panels逐项解释实际存在的子图标签（没有子图则空数组）；takeaway概括作者用该图传达的信息；caveats给出阅读边界。将图像观察与作者陈述区分清楚。没有证据的内容明确说不能从此图确定。',{paper_title:paper.title,abstract:paper.abstract,figure}, {model:activeAI().figure_model,maxOutputTokens:20000,image});}
+export const figureAnalysisSchema=z.object({
+ title_zh:z.string().min(1).max(50),
+ takeaway:z.string().min(1).max(120),
+ overview:z.string().min(1).max(120),
+ panels:z.array(z.object({label:z.string().min(1).max(40),explanation:z.string().min(1).max(180)})),
+});
+const figureInstruction=`你是医学论文图表解读者，帮助读者边看原图边快速理解发现。依据实际图像、作者图注及全文中引用该图的段落，用简明自然的中文解读。
+先说发现，再说明图怎么看。每个字段各司其职，不重复结论、背景或方法；使用短句和常用词，不写长篇逐项复述，不输出 Markdown 标记、写作过程或草稿提示。
+title_zh：一句简短题名，尽量不超过 24 字，点出图的主题。
+takeaway：用 1 至 2 句概括最重要的发现，尽量控制在 80 字内；保留会影响结论的人群、分析层次和验证场景。例如单变量分析可直接写“单项指标中，X 的区分能力较高”。
+overview：用 1 至 2 句说明组别、坐标或颜色代表什么，以及应看哪里，尽量控制在 100 字内；不要再次复述 takeaway。流程图只说明步骤与箭头的关系。
+panels：按原图顺序解释真正分立的子图，label 保留原始标签，explanation 用 1 至 2 句点明该子图展示的现象及意义，尽量控制在 120 字内。不要把一张连续流程图内部的步骤当成子图；没有独立子图则返回空数组。只选择支撑主要发现的 1 至 2 个关键数字，不逐一罗列全部组别、排名和统计量。
+准确性要求：不编造读不清的数字、统计差异或联合模型性能；不把示意图写成实验结果，不将相关性写成因果，不将作者陈述伪装成图像观察。必须先确认图的类型、图例和比较对象。对示意图直接解释设计，对单变量图直接限定为单项指标。只解释本图实际内容，不另写“未展示某指标，因此不能判断”“不等同于某性能”等旁支提醒，也不另列阅读边界或泛化免责声明。无法辨认且理解本图确实必需的信息，可在对应说明中简短指出一次。`;
+export function generateFigureAnalysis(figure:{label:string;caption:string;context:string;alt:string},paper:PaperInput,image:{data:Buffer;type:string}){
+ const {label,caption,context,alt}=figure;
+ return jsonCompletion(figureAnalysisSchema,figureInstruction,{paper_title:paper.title,abstract:paper.abstract,figure:{label,caption,context,alt}}, {model:activeAI().figure_model,maxOutputTokens:12000,image});
+}

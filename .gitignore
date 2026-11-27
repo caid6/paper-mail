@@ -1,5 +1,7 @@
 node_modules/
 dist/
+release/
+/build/pdf-runtime/
 data/
 .env
 .env.*

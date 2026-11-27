@@ -4,7 +4,7 @@
 
 研邮是一个在自己电脑上运行的 PubMed 文献收件箱，适合需要持续跟进专科研究的临床医生、研究生和生物医学研究者。设好关注的课题和期刊，每天打开收件箱就能看有哪些新论文。
 
-[功能介绍](#功能介绍) · [安装与启动](#安装与启动) · [添加自己的订阅](#添加自己的订阅)
+[下载 macOS 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg) · [全部版本](https://github.com/caid6/paper-mail/releases) · [功能介绍](#功能介绍) · [安装与启动](#安装与启动)
 
 [![研邮主界面，左侧是研究方向和文件夹，中间是论文收件箱，右侧是论文摘要和 PDF 阅读入口](docs/images/paper-mail-inbox.webp)](docs/images/paper-mail-inbox.webp)
 
@@ -20,9 +20,20 @@
 
 ## 安装与启动
 
-启动研邮需要 **Node.js 22.13+**。自动下载、上传和解析 PDF 需要 **Python 3.11+** 及 PDF 依赖。PubMed 收取与原文摘要可在 PDF 环境准备前使用。[Node.js 下载](https://nodejs.org/en/download) · [Python 下载](https://www.python.org/downloads/macos/)
+**macOS 桌面版（Apple Silicon，M 系列芯片）。** [下载 Paper-mail 2.16.4 安装包](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg)。打开 DMG，将 Paper-mail 拖入「应用程序」，再从「应用程序」启动。已内置 PDF 运行环境，无需安装 Node.js、Python 或单独的 PDF 服务。目前发布的安装包适用于 Apple Silicon Mac，Intel Mac 可使用下方的网页版源码安装方式。
+
+此安装包尚未进行 Apple 开发者签名和公证。若 macOS 阻止首次打开，可在「系统设置 → 隐私与安全性」确认来源后选择「仍要打开」。[安装包与 SHA-256 校验文件](https://github.com/caid6/paper-mail/releases/tag/v2.16.4)
+
+**本机网页版。** 需要 **Node.js 22.13+**；PDF 处理还需要 **Python 3.11+** 及 PDF 依赖。[Node.js 下载](https://nodejs.org/en/download) · [Python 下载](https://www.python.org/downloads/macos/)
 
 **macOS 后台启动。** 将项目放在 `~/Applications/paper-mail`，双击 `启动Paper-mail.command`。终端会显示安装各阶段和依赖下载进度。脚本优先复用项目内的 PDF 环境，检测到解释器失效时会重建。PDF 环境安装失败时，仍可启动研邮收取论文。装好 Python 或修复软件源后，再运行同一脚本即可恢复 PDF 队列。登录时服务自动启动，关闭浏览器后仍会收取论文。双击 `停止后台服务.command` 可取消登录启动。
+
+**自行构建 macOS 桌面版。** 在 Mac 上安装 Node.js、[uv](https://docs.astral.sh/uv/getting-started/installation/) 和项目依赖，再运行下方命令。DMG 文件生成在 `release/`，按构建 Mac 的芯片架构打包；安装 DMG 的用户不需要再安装构建工具。桌面版的论文库、下载文件和模型密钥默认保存在 `~/Library/Application Support/Paper-mail/`，可在「设置 → 数据与导出」查看和更改位置。
+```sh
+npm ci
+npm run desktop:dist
+```
+开发时可运行 `npm run desktop:dev` 启动桌面窗口。自行打包的应用尚未签名和公证，适合在当前 Mac 上运行或内部测试。
 
 ```sh
 mkdir -p ~/Applications
@@ -42,11 +53,11 @@ npm run build
 npm start
 ```
 
-**第一次打开会显示新手指引。** 点击步骤可直接进入相应设置，以后也可以点顶部的问号重新打开。新安装的收件箱和研究方向列表为空，期刊与影响因子筛选由你按需开启。
+**第一次打开会显示新手指引。** 必须完成模型连接、添加研究方向、初始化文献库、保存每日收取设置这四项配置后才能使用。点击步骤可直接进入相应设置，以后也可以点顶部的问号重新打开。
 
 ## 添加自己的订阅
 
-1. **按需接入模型。** 要使用 AI 生成检索式或中文导读，打开 **设置 → API 与模型**，填写自己的模型服务地址和 API Key。用 **读取模型列表** 选择文字和图文模型，也可以手写模型 ID，最后点 **验证并保存**。
+1. **连接模型。** 打开 **设置 → API 与模型**，默认使用 OpenAI 兼容接口。填写模型服务地址和 API Key，用 **读取模型列表** 选择文字和图文模型，也可以手写模型 ID，最后点 **验证并保存**。Google Gemini 也可以在服务类型中选择。
 2. **添加研究方向。** 点侧栏 **研究方向** 旁的加号。选择 **AI 生成** 时，可以输入「我想追踪成人高血压的家庭监测和远程管理研究」，生成后检查 PubMed 匹配篇数和检索式。只用 PubMed 时，选 **手动输入**，填写名称与检索式，点 **验证检索式**。两种方式都在确认后点 **保存研究方向**。
 
 3. **选择筛选条件和历史范围。** 在 **设置 → 文献筛选** 按需设定期刊和影响因子。两项都启用时，论文须同时符合。想回溯近期文献，可以在同页选择 **最近 1 个月** 或自定义日期，再点 **按此范围初始化文献库**。
@@ -59,7 +70,7 @@ npm start
 在收件箱右上方点 **检索添加**，输入题目、PMID、DOI 或 DOI 链接，核对结果后点击 **添加**。论文按收信时间入箱，独立于订阅和影响因子设置。研邮会在后台尝试下载公开 PDF，并在作者摘要和模型可用时生成中文导读。
 
 - **中文导读。** 收件箱按 **收信时间** 倒序，每页默认显示 50 篇。点开邮件后，右侧标注论文发表日期，并可阅读研究问题、核心方法、主要发现和证据局限。打开 **原文摘要** 可以核对作者的表述。
-- **图文解读。** 有可用的 PMC 主图、Nature Portfolio 公开主图或带主图图注的本机 PDF 时，研邮可以把图和作者图注放在一起解读。使用 PDF 时，显示含主图的整页，以保留子图和图注。
+- **图文解读。** 按核心结论、读图要点和子图说明解读可用的 PMC 主图、Nature Portfolio 公开主图或本机 PDF 主图，正文与收件箱采用同样的 14px 字号。点 **全屏阅读** 或直接点击图片，可同时查看原图和中文解读，支持切换主图、缩放图片；按 Esc 退出。作者图注可展开查看，已有内容可点 **重新解读** 按新的精简格式生成。使用 PDF 时，显示含主图的整页，以保留子图和图注。
 - **全文问答。** 论文有本机 PDF 时，点 **阅读文献**，一边滚动读全文，一边提问。例如可以问「作者在哪些数据上做了外部验证？」问答使用 PDF 中可提取的文字。按 Enter 发送，按 Shift+Enter 换行。
 - **上传 PDF。** 自动获取不可用或失败后，点 **上传 PDF** 添加同一篇论文的文件，最大 50 MB、1000 页。也能从阅读区直接打开 PubMed 或出版社原文。
 
@@ -69,13 +80,13 @@ npm start
 
 ## 模型、全文和数据
 
-**模型要求。** 基础 PubMed 检索和原文摘要阅读可以直接使用。检索式和期刊清单生成、中文导读、相关性质控、图文解读及全文问答需要配置模型。用于结构化生成的模型须支持 JSON Object 输出，图文模型还须支持图片输入。通过验证的密钥保存在本机的 `.env`。[环境变量示例](.env.example)
+**模型要求。** 初始化必须先配置并验证模型服务。检索式和期刊清单生成、中文导读、相关性质控、图文解读及全文问答使用已配置的模型；结构化生成须支持 JSON Object 输出，图文模型还须支持图片输入。通过验证的密钥保存在本机的 `.env`。[环境变量示例](.env.example)
 
 **全文准备。** 项目自带公开 PDF 下载器，可查找 PMC、Europe PMC、受支持的出版社公开全文和 OpenAlex 的开放版本。下载后会核对 DOI 或标题。遇到付费、需登录或自动下载未成功的论文，可从出版社打开原文或上传同篇 PDF。机构访问取决于所在机构的授权和本机配置。PDF 有可提取的文字时才支持全文问答，纯扫描件可以阅读。[全文准备与问答实现](DEVELOPMENT.md#站内阅读与问答)
 
-**安装与连接排查。** PDF 功能报环境未就绪时，运行 `npm run setup:python` 后重启服务。默认使用项目的 `.venv`，已有 Python 环境也可以通过本机 `.env` 的 `PAPER_DOWNLOAD_PYTHON` 指定。若 PyPI 不可达，可在终端配置 `PIP_INDEX_URL` 指向可访问的 HTTPS 软件源。PubMed 会分别提示 DNS、网络超时和 HTTP 错误。有代理的环境可配置 `HTTPS_PROXY` 和 `NO_PROXY`。模型设置中的 **测试连接** 会分别检查 JSON 和图像输入，并提示密钥、权限或额度错误。
+**安装与连接排查。** macOS 桌面版自带 PDF 运行环境；源码版或 `desktop:dev` 报 PDF 环境未就绪时，运行 `npm run setup:python` 后重启服务。默认使用项目的 `.venv`，也可以通过本机 `.env` 的 `PAPER_DOWNLOAD_PYTHON` 指定已有 Python 环境。PubMed 会分别提示 DNS、网络超时和 HTTP 错误。有代理的环境可配置 `HTTPS_PROXY` 和 `NO_PROXY`。模型设置中的 **测试连接** 会分别检查 JSON 和图像输入，并提示密钥、权限或额度错误。
 
-**数据存放。** 服务只监听 `127.0.0.1`。阅读记录、笔记、问答和文献设置存放在本机 `data/papers.sqlite`，PDF 在 `data/downloads/`，主图在 `data/figures/`。使用模型功能时，对应材料会发送到你设置的模型服务，例如导读所需的标题与摘要、问答所需的 PDF 文字和本篇对话。
+**数据存放。** 服务只监听 `127.0.0.1`。网页版默认使用项目目录，桌面版默认使用 `~/Library/Application Support/Paper-mail/`：文献库在 `data/papers.sqlite`，PDF 在 `data/downloads/`，主图在 `data/figures/`，模型配置在 `.env`。两种界面均可在「设置 → 数据与导出」查看完整路径；桌面版还可选择新位置迁移数据，并在论文详情点「打开文件夹」定位本机 PDF。PDF 不会上传到 Paper-mail 云端；选择同步盘目录时，第三方同步软件可能同步这些文件。使用 AI 功能时，相关标题、摘要、PDF 提取文本或主图会发送到你配置的模型服务。
 
 **期刊指标。** 采用 2026 年发布的 **2025 JIF** 总表及 10 月修正，优先按 ISSN 匹配。开启影响因子筛选后，只收取并显示有可核验 JIF 且达到门槛的论文。[JCR 发布公告](https://clarivate.com/news/clarivate-releases-journal-citation-reports-2026/) · [官方修正表](https://journalcitationreports.zendesk.com/hc/en-gb/articles/47808147130129-2026)
 

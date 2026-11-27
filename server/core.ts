@@ -84,10 +84,13 @@ export function connect(path:string) {
   const figureColumns=new Set(db.prepare('PRAGMA table_info(figures)').all().map(c=>String(c.name)));
   if(!figureColumns.has('origin'))db.exec("ALTER TABLE figures ADD COLUMN origin TEXT NOT NULL DEFAULT 'pmc'");
   if(!figureColumns.has('source_page'))db.exec('ALTER TABLE figures ADD COLUMN source_page INTEGER');
+  if(!figureColumns.has('analysis_requested'))db.exec('ALTER TABLE figures ADD COLUMN analysis_requested INTEGER NOT NULL DEFAULT 0');
   db.exec("UPDATE fulltexts SET status='pending' WHERE status='loading'");
   db.prepare("UPDATE figures SET status='pending' WHERE status IN ('fetching','generating')").run();
+  const deliveryWasTracked=Boolean(db.prepare("SELECT 1 FROM settings WHERE key='delivery_configured'").get());
   const put=db.prepare('INSERT OR IGNORE INTO settings(key,value) VALUES(?,?)');
-  for(const [k,v] of Object.entries({time:'07:30',timezone:'Asia/Shanghai',per_topic:'10',auto_sync:'true',quality_enabled:'true',last_daily_date:'',last_sync:'',min_impact_factor:'',min_impact_operator:'gte',onboarding_seen:'false',backfill_status:'not_started',backfill_range:'30',backfill_days:'30',backfill_limit:'200',backfill_date_field:'crdt',json_output_migration:'pending',figure_queue_migration:'pending',content_retry_migration:'pending',queue_retry_migration:'pending',figure_sources_migration:'pending'}))put.run(k,v);
+  for(const [k,v] of Object.entries({time:'07:30',timezone:'Asia/Shanghai',per_topic:'10',auto_sync:'true',quality_enabled:'true',last_daily_date:'',last_sync:'',min_impact_factor:'',min_impact_operator:'gte',onboarding_seen:'false',delivery_configured:'false',backfill_status:'not_started',backfill_range:'30',backfill_days:'30',backfill_limit:'200',backfill_date_field:'crdt',json_output_migration:'pending',figure_queue_migration:'pending',content_retry_migration:'pending',queue_retry_migration:'pending',figure_sources_migration:'pending'}))put.run(k,v);
+  if(!deliveryWasTracked&&(settings(db).onboarding_seen==='true'||db.prepare("SELECT 1 FROM sync_runs WHERE kind='daily' AND status='success' LIMIT 1").get()))setSetting(db,'delivery_configured','true');
   if(settings(db).json_output_migration==='pending'){
     const oldError='AI 请求失败（HTTP 400）：该服务不支持当前参数或模型，请检查配置';
     db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE digest_status='error' AND digest_error=? AND (in_library=1 OR starred=1)").run(oldError);

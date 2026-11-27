@@ -12,14 +12,16 @@ import {enrichLibrary,enrichPaper,journalFilter,mailboxJournalWhere,journalInfo,
 import {downloadInfo,downloadState,requestDownload,downloadedPath} from './downloads.ts';
 import {figureState,queueFulltext,pumpFigures,pumpPublisherFigures,retryPublisherFigures} from './figures.ts';
 import {replaceLibrary,type Initialization,type TopicMatches} from './initialization.ts';
-import {ensureDocument,documentState,uploadDocument,chatHistory,askDocument,clearChat,DocumentError} from './documents.ts';
+import {ensureDocument,documentState,uploadDocument,chatHistory,askDocument,clearChat,hasActiveDocumentJobs,DocumentError} from './documents.ts';
 import {prepareReading,readingPreparationStats} from './reading-preparation.ts';
 import {describeCandidate,importPaper,lookupPapers,InvalidLookupInput} from './manual-import.ts';
 
 import {generateJournalPlan} from './journal-plans.ts';
+import {storagePath,storageRoot} from './storage-paths.ts';
 
-const root=process.cwd();mkdirSync(path.join(root,'data'),{recursive:true});
-const db=connect(path.join(root,'data','papers.sqlite'));
+const root=path.resolve(process.env.PAPER_MAIL_APP_ROOT||process.cwd());
+const dataRoot=storageRoot(root);mkdirSync(path.join(dataRoot,'data'),{recursive:true});
+const db=connect(path.join(dataRoot,'data','papers.sqlite'));
 enrichLibrary(db);
 if(!settings(db).pubmed_migration){
   db.exec('BEGIN IMMEDIATE');
@@ -39,9 +41,51 @@ app.use('/api',(req,res,next)=>{
   res.setHeader('Cache-Control','no-store');next();
 });
 let syncing=false;let workers=0;let titleWorkers=0;let qualityWorkers=0;
+let libraryOperations=0;let journalRefreshInProgress=false;let storageRelocating=false;let mutationRequests=0;
 let libraryTail=Promise.resolve();
-async function withLibraryLock<T>(operation:()=>Promise<T>|T):Promise<T>{const previous=libraryTail;let release!:()=>void;libraryTail=new Promise<void>(resolve=>{release=resolve;});await previous;try{return await operation();}finally{release();}}
+async function withLibraryLock<T>(operation:()=>Promise<T>|T):Promise<T>{const previous=libraryTail;let release!:()=>void;libraryTail=new Promise<void>(resolve=>{release=resolve;});libraryOperations++;await previous;try{return await operation();}finally{libraryOperations--;release();}}
 type SyncOptions={dateClause?:string;initialize?:Initialization};
+function setupStatus(){
+  const current=settings(db);
+  const status={
+    api:aiConfigured(),
+    topics:hasEnabledSubscriptions(db),
+    library:current.initialize_status==='complete'||Boolean(current.library_initialized_on),
+    delivery:current.delivery_configured==='true'||current.onboarding_seen==='true',
+  };
+  return {...status,complete:status.api&&status.topics&&status.library&&status.delivery};
+}
+function startBackgroundPreparation(){
+  if(!setupStatus().complete)return;
+  void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);
+}
+function isSetupRoute(method:string,route:string){
+  const request=`${method} ${route}`;
+  return [
+    /^GET \/(?:health|state|papers)$/,
+    /^POST \/ai\/(?:test|models)$/,
+    /^PUT \/ai$/,
+    /^POST \/subscriptions(?:\/(?:generate|preview))?$/,
+    /^(?:PUT|DELETE) \/subscriptions\/[^/]+$/,
+    /^GET \/journals\/search$/,
+    /^POST \/journals\/generate$/,
+    /^PUT \/preferences$/,
+    /^POST \/initialize$/,
+    /^PUT \/settings$/,
+  ].some(pattern=>pattern.test(request));
+}
+app.use('/api',(req,res,next)=>{
+  if(storageRelocating)return res.status(503).json({error:'本机存储正在迁移，请稍候'});
+  if(setupStatus().complete||isSetupRoute(req.method,req.path))return next();
+  res.status(423).json({error:'完成四项初始化配置后即可使用 Paper-mail'});
+});
+app.use('/api',(req,res,next)=>{
+  if(['GET','HEAD','OPTIONS'].includes(req.method))return next();
+  mutationRequests++;
+  let released=false;
+  const release=()=>{if(!released){released=true;mutationRequests--;}};
+  res.once('finish',release);res.once('close',release);next();
+});
 async function sync(kind:string,options:SyncOptions={}){if(syncing)return;syncing=true;try{await withLibraryLock(()=>performSync(kind,options));}finally{syncing=false;}}
 async function pumpDigests(){
   if(!aiConfigured())return;
@@ -138,23 +182,24 @@ async function performSync(kind:string,options:SyncOptions={}){
     if(initial){
       if(errors.length)throw new Error(errors.join('；'));
       replaceLibrary(db,groups,initial,finishedAt,localClock(new Date(finishedAt),s.timezone).date,run.lastInsertRowid);
-      void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);
+      startBackgroundPreparation();
       return;
     }
     const status=errors.length?'error':'success';
     db.prepare('UPDATE sync_runs SET finished_at=?,status=?,added=?,error=? WHERE id=?').run(finishedAt,status,added,errors.length?errors.join('；'):null,run.lastInsertRowid);
     if(!errors.length){setSetting(db,'last_sync',finishedAt);if(kind==='daily')setSetting(db,'last_daily_date',localClock(new Date(),s.timezone).date);}
-    void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);
+    startBackgroundPreparation();
   }catch(e:any){db.prepare("UPDATE sync_runs SET finished_at=?,status='error',added=?,error=? WHERE id=?").run(new Date().toISOString(),added,e.message,run.lastInsertRowid);if(initial){setSetting(db,'initialize_status','error');setSetting(db,'initialize_error',e.message);}}
 }
 
 app.get('/api/health',(_req,res)=>res.json({app:'paper-mail'}));
 app.put('/api/onboarding/dismiss',(_req,res)=>{
+  if(!setupStatus().complete)return res.status(409).json({error:'请先完成四项初始化配置'});
   setSetting(db,'onboarding_seen','true');
   res.json({ok:true});
 });
-app.get('/api/state',(_req,res)=>res.json({settings:settings(db),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(db),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
-app.get('/api/papers',(req,res)=>res.json(listPapers(db,listSchema.parse(req.query))));
+app.get('/api/state',(_req,res)=>res.json({settings:settings(db),storage:{root:dataRoot,pdfFolder:storagePath(root,'data','downloads')},setup:setupStatus(),subscriptions:subscriptions(db),stats:mailboxCounts(db),quality:qualityStats(db),topic_counts:topicCounts(db),syncing,ai:aiConfig(),journals:journalInfo,selectedJournals:journalOptions(journalFilter(db).ids),download:downloadInfo(),readingPreparation:readingPreparationStats(db),recentDailyRuns:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 7").all(),dailyRun:db.prepare("SELECT * FROM sync_runs WHERE kind='daily' ORDER BY id DESC LIMIT 1").get()||null,lastRun:db.prepare('SELECT * FROM sync_runs ORDER BY id DESC LIMIT 1').get()||null}));
+app.get('/api/papers',(req,res)=>res.json(setupStatus().complete?listPapers(db,listSchema.parse(req.query)):{items:[],total:0,page:1,page_size:50,pages:1}));
 const lookupQuery=z.string().trim().min(1).max(500);
 app.post('/api/papers/lookup',async(req,res)=>{
  const {query}=z.object({query:lookupQuery}).parse(req.body);
@@ -226,9 +271,7 @@ app.put('/api/preferences',(req,res)=>{
     db.exec('COMMIT');
   }catch(error){db.exec('ROLLBACK');throw error;}
   const filterChanged=preferences.min_impact_factor!==undefined||preferences.min_impact_operator!==undefined||preferences.journal_filter_ids!==undefined;
-  if(filterChanged)void pumpDigests();
-  if(preferences.quality_enabled)void pumpQuality();
-  if(preferences.quality_enabled!==undefined||filterChanged)prepareReading(db,root);
+  if(setupStatus().complete&&(filterChanged||preferences.quality_enabled!==undefined))startBackgroundPreparation();
   res.json({ok:true});
 });
 const initializationSchema=z.object({start:z.iso.date(),end:z.iso.date(),date_field:z.enum(['crdt','pdat']),range:z.enum(['7','30','90','180','365','custom']),limit:z.number().int().min(1).max(5000),min_impact_factor:z.number().min(0).max(1000).nullable(),min_impact_operator:z.enum(['gt','gte']).optional(),journal_filter_ids:journalIdsSchema.optional(),journal_filter_description:journalDescriptionSchema.optional(),quality_enabled:z.boolean()}).refine(x=>x.start<=x.end,{message:'开始日期不能晚于结束日期'});
@@ -297,14 +340,14 @@ async function writeTopic(id:string,s:z.infer<typeof subscriptionSchema>){
  }
  const result=saveSubscription(db,id,s,[...new Set([...matches,...papers.map(p=>p.id)])],papers);
  if(changed)db.prepare("UPDATE relevance_reviews SET status='pending',verdict=NULL,reason='',evidence='',model=NULL,reviewed_at=NULL,error=NULL WHERE subscription_id=?").run(id);
- void pumpQuality();void pumpDigests();prepareReading(db,root);return {id,...result};
+ startBackgroundPreparation();return {id,...result};
 }
 app.post('/api/subscriptions',async(req,res)=>res.json(await withLibraryLock(()=>writeTopic(crypto.randomUUID(),subscriptionSchema.parse(req.body)))));
 app.put('/api/subscriptions/:id',async(req,res)=>{res.json(await withLibraryLock(()=>{if(!db.prepare('SELECT id FROM subscriptions WHERE id=?').get(req.params.id))throw new Error('研究方向已不存在');return writeTopic(req.params.id,subscriptionSchema.parse(req.body));}));});
 app.delete('/api/subscriptions/:id',async(req,res)=>{await withLibraryLock(()=>db.prepare('DELETE FROM subscriptions WHERE id=?').run(req.params.id));res.json({ok:true});});
 app.put('/api/settings',(req,res)=>{
   const s=z.object({time:z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/),timezone:z.string().refine(x=>{try{new Intl.DateTimeFormat('en',{timeZone:x});return true;}catch{return false;}}),per_topic:z.number().int().min(1).max(100),auto_sync:z.boolean()}).parse(req.body);
-  for(const [k,v] of Object.entries(s))setSetting(db,k,String(v));res.json({ok:true});
+  for(const [k,v] of Object.entries(s))setSetting(db,k,String(v));setSetting(db,'delivery_configured','true');startBackgroundPreparation();res.json({ok:true});
 });
 app.post('/api/ai/test',async(req,res)=>res.json(await testAI(resolveAI(aiInputSchema.parse(req.body)))));
 app.post('/api/ai/models',async(req,res)=>res.json({models:await listModels(resolveAI(aiServiceSchema.parse(req.body)))}));
@@ -312,10 +355,10 @@ app.put('/api/ai',async(req,res)=>{
   const input=aiInputSchema.parse(req.body);const config=resolveAI(input);
   await testAI(config);
   const values:Record<string,string>={AI_PROVIDER:config.provider,AI_BASE_URL:config.base_url,AI_MODEL:config.model,AI_FIGURE_MODEL:config.figure_model};if(input.key)values.AI_API_KEY=input.key;
-  const envPath=path.join(root,'.env');let env=existsSync(envPath)?readFileSync(envPath,'utf8'):'';
+  const envPath=storagePath(root,'.env');let env=existsSync(envPath)?readFileSync(envPath,'utf8'):'';
   for(const [k,v] of Object.entries(values)){const line=`${k}=${JSON.stringify(v)}`;env=new RegExp(`^${k}=.*$`,'m').test(env)?env.replace(new RegExp(`^${k}=.*$`,'m'),()=>line):env+'\n'+line;}
   writeFileSync(envPath,env+'\n',{mode:0o600});chmodSync(envPath,0o600);for(const [k,v] of Object.entries(values))process.env[k]=v;
-  db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE digest_status='error'").run();db.prepare("UPDATE papers SET title_status='pending',title_error=NULL WHERE title_status='error'").run();db.prepare("UPDATE figures SET status='pending',error=NULL WHERE status='error'").run();db.prepare("UPDATE relevance_reviews SET status='pending',error=NULL WHERE status='error'").run();void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);res.json({ok:true,config:aiConfig()});
+  db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE digest_status='error'").run();db.prepare("UPDATE papers SET title_status='pending',title_error=NULL WHERE title_status='error'").run();db.prepare("UPDATE figures SET status='pending',error=NULL WHERE status='error'").run();db.prepare("UPDATE relevance_reviews SET status='pending',error=NULL WHERE status='error'").run();startBackgroundPreparation();res.json({ok:true,config:aiConfig()});
 });
 app.post('/api/papers/bulk',(req,res)=>{
   const {ids,action}=z.object({ids:z.array(z.string()).min(1).max(50),action:z.enum(['read','unread','archive','restore','star','unstar'])}).parse(req.body);
@@ -343,8 +386,17 @@ app.post('/api/figures/:id/retry',(req,res)=>{
   db.prepare("UPDATE figures SET status='pending',error=NULL WHERE id=? AND status='error'").run(req.params.id);
   void pumpFigures(db,root);res.json({ok:true});
 });
+app.post('/api/figures/:id/regenerate',(req,res)=>{
+  const figure=db.prepare('SELECT image_path,status FROM figures WHERE id=?').get(req.params.id);
+  if(!figure)return res.status(404).json({error:'主图不存在'});
+  if(!figure.image_path)return res.status(409).json({error:'原图下载完成后即可重新解读'});
+  if(!aiConfigured())return res.status(409).json({error:'请先配置图文模型'});
+  if(['pending','fetching','generating'].includes(String(figure.status)))return res.status(409).json({error:'这张图正在处理中'});
+  db.prepare("UPDATE figures SET status='pending',error=NULL,analysis_requested=1 WHERE id=?").run(req.params.id);
+  void pumpFigures(db,root);res.status(202).json({ok:true});
+});
 app.post('/api/papers/:id/figures/retry',(req,res)=>{retryPublisherFigures(db,req.params.id);prepareReading(db,root);res.json({ok:true});});
-app.get('/api/figures/:id/image',(req,res)=>{const f:any=db.prepare('SELECT image_path,image_type FROM figures WHERE id=?').get(req.params.id);if(!f?.image_path)return res.sendStatus(404);res.setHeader('Content-Type',f.image_type);res.setHeader('Cache-Control','private,max-age=86400');res.sendFile(path.join(root,'data','figures',f.image_path));});
+app.get('/api/figures/:id/image',(req,res)=>{const f:any=db.prepare('SELECT image_path,image_type FROM figures WHERE id=?').get(req.params.id);if(!f?.image_path)return res.sendStatus(404);res.setHeader('Content-Type',f.image_type);res.setHeader('Cache-Control','private,max-age=86400');res.sendFile(storagePath(root,'data','figures',f.image_path));});
 app.get('/api/export',(_req,res)=>{
   const rows=db.prepare('SELECT * FROM papers WHERE starred=1 ORDER BY published DESC').all().map(p=>hydrate(db,p));
   const md='# 研邮 Paper-mail · 收藏论文\n\n'+rows.map(p=>`## ${p.title_zh||p.digest?.title_zh||p.title}\n\n${p.title}\n\n${p.authors.join(', ')} · ${p.journal?p.journal+' · ':''}${p.publication_date||p.published.slice(0,10)}\n\n[原文](${p.url}) · [${p.pdf_url?'PDF':'全文'}](${p.pdf_url||p.full_text_url||p.url})\n\n${p.digest?`${p.digest.summary}\n\n### 核心发现\n${p.digest.findings.map(x=>'- '+x).join('\n')}\n\n### 证据边界\n${p.digest.limitations.map(x=>'- '+x).join('\n')}\n\n解读依据：作者摘要，未读取全文。`:p.abstract}\n\n${p.note?'### 我的笔记\n'+p.note:''}`).join('\n\n---\n\n');
@@ -356,10 +408,41 @@ if(!process.argv.includes('--dev')&&existsSync(path.join(root,'dist','index.html
 else{const {createServer}=await import('vite');const vite=await createServer({server:{middlewareMode:true},appType:'spa'});app.use(vite.middlewares);}
 app.use((err:any,_req:any,res:any,_next:any)=>{if(err instanceof InvalidLookupInput)return res.status(400).json({error:err.message});if(err instanceof DocumentError)return res.status(err.status).json({error:err.message});if(err.type==='entity.too.large')return res.status(413).json({error:'上传文件不能超过 50 MB'});if(err instanceof z.ZodError)return res.status(400).json({error:'输入内容不符合要求，请检查字段'});console.error(err.message);res.status(500).json({error:err.name==='TimeoutError'?'请求超时，请稍后重试':err.message==='fetch failed'?'无法连接远端服务，请检查地址与网络后重试':err.message||'服务处理失败'});});
 const port=Number(process.env.PORT||4317);
-app.listen(port,'127.0.0.1',()=>{console.log(`研邮 Paper-mail已启动：http://127.0.0.1:${port}`);void pumpDigests();void pumpTitles();void pumpQuality();prepareReading(db,root);void refreshJournalMetadata().finally(()=>{prepareReading(db,root);void tick();});});
+export const server=app.listen(port,'127.0.0.1',()=>{const address=server.address();const actualPort=address&&typeof address!=='string'?address.port:port;console.log(`研邮 Paper-mail已启动：http://127.0.0.1:${actualPort}`);startBackgroundPreparation();void refreshJournalMetadata().finally(()=>{startBackgroundPreparation();void tick();});});
+export const serverReady=new Promise<void>((resolve,reject)=>{
+  if(server.listening){resolve();return;}
+  server.once('listening',()=>resolve());
+  server.once('error',reject);
+});
+export function localPdfPath(paperId:string){return downloadedPath(db,root,paperId);}
+export async function stopForStorageRelocation(){
+  const active:any=db.prepare(`SELECT
+    EXISTS(SELECT 1 FROM downloads WHERE status='running') OR
+    EXISTS(SELECT 1 FROM fulltexts WHERE status='loading') OR
+    EXISTS(SELECT 1 FROM figures WHERE status IN ('fetching','generating')) OR
+    EXISTS(SELECT 1 FROM pdf_figure_indexes WHERE status='processing') OR
+    EXISTS(SELECT 1 FROM publisher_figure_indexes WHERE status='processing') OR
+    EXISTS(SELECT 1 FROM papers WHERE digest_status='generating' OR title_status='generating') OR
+    EXISTS(SELECT 1 FROM relevance_reviews WHERE status='running') AS active`).get();
+  if(syncing||workers||titleWorkers||qualityWorkers||libraryOperations||journalRefreshInProgress||mutationRequests||hasActiveDocumentJobs(db)||active.active){
+    throw new Error('后台同步、下载或解析任务正在运行，请等任务结束后再迁移。');
+  }
+  storageRelocating=true;
+  try{
+    await new Promise<void>((resolve,reject)=>{
+      server.close(error=>error?reject(error):resolve());
+      server.closeAllConnections();
+    });
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    db.close();
+  }catch(error){
+    storageRelocating=false;
+    throw error;
+  }
+}
 let attemptedDate='';
 async function tick(){
-  if(syncing||!hasEnabledSubscriptions(db))return;
+  if(storageRelocating||syncing||!setupStatus().complete||!hasEnabledSubscriptions(db))return;
   const s=settings(db),now=new Date();
   const day=localClock(now,s.timezone).date;
   if(dailyDue(now,s)&&attemptedDate!==day){attemptedDate=day;await sync('daily',{dateClause:dailyDateClause(s)});}
@@ -372,7 +455,9 @@ function dailyDateClause(s:Record<string,string>){
  return pubmedDateClause(valid.at(-1)||today,today,'crdt');
 }
 async function refreshJournalMetadata(){
+ if(journalRefreshInProgress)return;
  const ids=new Map(db.prepare("SELECT id,pmid FROM papers WHERE source='pubmed' AND pmid<>'' AND journal_issns='[]'").all().map(p=>['pmid:'+String(p.pmid),String(p.id)]));
  if(!ids.size)return;
- try{const records=await fetchPubmedMetadata([...ids.keys()]);db.exec('BEGIN IMMEDIATE');try{for(const p of records){const id=ids.get(p.id);if(!id)continue;db.prepare('UPDATE papers SET journal_issns=? WHERE id=?').run(JSON.stringify(p.journal_issns||[]),id);enrichPaper(db,id);}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}catch(e:any){console.error('期刊 ISSN 更新失败：'+e.message);}
+ journalRefreshInProgress=true;
+ try{const records=await fetchPubmedMetadata([...ids.keys()]);db.exec('BEGIN IMMEDIATE');try{for(const p of records){const id=ids.get(p.id);if(!id)continue;db.prepare('UPDATE papers SET journal_issns=? WHERE id=?').run(JSON.stringify(p.journal_issns||[]),id);enrichPaper(db,id);}db.exec('COMMIT');}catch(e){db.exec('ROLLBACK');throw e;}}catch(e:any){console.error('期刊 ISSN 更新失败：'+e.message);}finally{journalRefreshInProgress=false;}
 }

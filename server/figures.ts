@@ -10,7 +10,8 @@ import {z} from 'zod';
 import type {DB} from './core.ts';
 import {getPaper} from './library.ts';
 import {aiConfigured,activeAI,generateFigureAnalysis,modelJobStatus} from './ai.ts';
-import {readingScope} from './reading-scope.ts';
+import {downloadScope,readingScope} from './reading-scope.ts';
+import {scriptPath,storagePath} from './storage-paths.ts';
 import {fetchPMC,PMCUnavailable} from './pmc.ts';
 export type FigureOrigin='pmc'|'publisher'|'pdf';
 export type ParsedFigure={id:string;label:string;caption:string;context:string;alt:string;image_url:string;source_url:string;position:number};
@@ -136,7 +137,7 @@ async function indexPublisherFiguresOnce(db:DB,root:string,paperId:string){
  try{
   const source=await fetchNatureFigures(String(paper.doi));
   if(source.fingerprint!==expectedFingerprint)throw new Error('出版社图表 DOI 指纹不一致');
-  mkdirSync(path.join(root,'data','figures'),{recursive:true});
+  mkdirSync(storagePath(root,'data','figures'),{recursive:true});
   const stored: any[]=[];const failures:string[]=[];
   for(const figure of source.figures){
    try{
@@ -144,7 +145,7 @@ async function indexPublisherFiguresOnce(db:DB,root:string,paperId:string){
     if(!response.ok)throw new Error(`HTTP ${response.status}`);
     const data=Buffer.from(await response.arrayBuffer());if(data.length>20000000)throw new Error('图像超过 20MB');
     const type=imageMimeType(data),id=createHash('sha256').update(`${paperId}:publisher:${source.fingerprint}:${figure.label}`).digest('hex').slice(0,32);
-    const imagePath=id+'.'+type.split('/')[1];writeFileSync(path.join(root,'data','figures',imagePath),data);
+    const imagePath=id+'.'+type.split('/')[1];writeFileSync(storagePath(root,'data','figures',imagePath),data);
     stored.push({id,figure,imagePath,type});
    }catch(error:any){failures.push(`${figure.label}：${error.message||'图像不可用'}`);}
   }
@@ -155,7 +156,7 @@ async function indexPublisherFiguresOnce(db:DB,root:string,paperId:string){
    if(hasPMC){
     db.prepare('UPDATE publisher_figure_indexes SET status=?,error=NULL,fetched_at=? WHERE paper_id=?').run('superseded',new Date().toISOString(),paperId);
     db.exec('COMMIT');
-    for(const item of stored)rmSync(path.join(root,'data','figures',item.imagePath),{force:true});
+    for(const item of stored)rmSync(storagePath(root,'data','figures',item.imagePath),{force:true});
     return;
    }
    db.prepare("DELETE FROM figures WHERE paper_id=? AND origin='publisher'").run(paperId);
@@ -216,7 +217,7 @@ const pdfFigureSchema=z.object({
 function extractPDFFigures(root:string,file:string):Promise<{figures:z.infer<typeof pdfFigureSchema>[];outputDir:string}>{
  return new Promise((resolve,reject)=>{
   const outputDir=mkdtempSync(path.join(tmpdir(),'paper-mail-figures-'));
-  const child=spawn(pythonExecutable(),[path.join(root,'scripts','extract_pdf_figures.py')],{stdio:['pipe','pipe','pipe']});
+  const child=spawn(pythonExecutable(),[scriptPath(root,'scripts','extract_pdf_figures.py')],{stdio:['pipe','pipe','pipe']});
   let output='';let expired=false;
   const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},120000);
   child.stdout.on('data',data=>{output+=data;if(output.length>2000000){expired=true;child.kill('SIGKILL');}});
@@ -253,13 +254,13 @@ async function indexPDFFiguresOnce(db:DB,root:string,paperId:string,file:string)
  try{
   const extracted=await extractPDFFigures(root,file);
   outputDir=extracted.outputDir;
-  mkdirSync(path.join(root,'data','figures'),{recursive:true});
+  mkdirSync(storagePath(root,'data','figures'),{recursive:true});
   const publisherLabels=new Set((db.prepare("SELECT label FROM figures WHERE paper_id=? AND origin='publisher'").all(paperId) as {label:string}[]).map(figure=>figure.label));
   const missingFigures=extracted.figures.map((figure,index)=>({figure,position:index+1})).filter(item=>!publisherLabels.has(item.figure.label));
   const stored=missingFigures.map(({figure,position})=>{
    const id=createHash('sha256').update(`${paperId}:pdf:${sha256}:${figure.page}:${figure.label}:${position}`).digest('hex').slice(0,32);
    const imagePath=id+'.png';
-   writeFileSync(path.join(root,'data','figures',imagePath),readFileSync(path.join(extracted.outputDir,figure.file)));
+   writeFileSync(storagePath(root,'data','figures',imagePath),readFileSync(path.join(extracted.outputDir,figure.file)));
    return {id,position,figure,image_path:imagePath};
   });
   const sourceUrl='/api/papers/'+encodeURIComponent(paperId)+'/pdf';
@@ -321,7 +322,7 @@ export async function pumpFulltexts(db:DB,root:string,onComplete?:()=>void){
  try{
   for(;;){
    const row=db.prepare(`SELECT p.id FROM fulltexts t JOIN papers p ON p.id=t.paper_id
-     WHERE t.status='pending' AND (t.automatic=0 OR (${readingScope(db)}))
+     WHERE t.status='pending' AND (t.automatic=0 OR (${downloadScope(db)}))
      ORDER BY p.received_at DESC,p.published DESC,p.id DESC LIMIT 1`).get();
    if(!row)break;
    await loadFulltext(db,String(row.id),root);
@@ -362,26 +363,26 @@ export async function pumpFigures(db:DB,root:string){
  try{for(;;){
   const row:any=db.prepare(`SELECT f.*,p.pmcid,p.title,p.abstract,p.authors,p.published,p.updated,p.categories,p.url,p.pdf_url,p.source,p.journal,p.publication_date,p.indexed_at,p.doi,p.pub_types,p.full_text_url
     FROM figures f JOIN papers p ON p.id=f.paper_id LEFT JOIN fulltexts t ON t.paper_id=f.paper_id
-    WHERE f.status='pending' AND (? OR f.image_path='') AND ((${readingScope(db)}) OR (f.origin='pmc' AND t.paper_id IS NOT NULL AND t.automatic=0))
-    ORDER BY p.received_at DESC,p.published DESC,p.id DESC,f.position LIMIT 1`).get(Number(aiConfigured()));
+    WHERE f.status='pending' AND (? OR f.image_path='') AND (f.analysis_requested=1 OR (${readingScope(db)}) OR (f.origin='pmc' AND t.paper_id IS NOT NULL AND t.automatic=0))
+    ORDER BY f.analysis_requested DESC,p.received_at DESC,p.published DESC,p.id DESC,f.position LIMIT 1`).get(Number(aiConfigured()));
   if(!row)break;
   db.prepare('UPDATE figures SET status=?,error=NULL WHERE id=?').run(row.image_path?'generating':'fetching',row.id);
   try{
    let data:Buffer,type:string;
-   if(row.image_path){data=readFileSync(path.join(root,'data','figures',row.image_path));type=row.image_type;}
+   if(row.image_path){data=readFileSync(storagePath(root,'data','figures',row.image_path));type=row.image_type;}
    else{const url=new URL(row.image_url);if(url.protocol!=='https:'||url.username||url.password||url.port||!['cdn.ncbi.nlm.nih.gov','pmc.ncbi.nlm.nih.gov','pmc-oa-opendata.s3.amazonaws.com'].includes(url.hostname))throw new Error('主图地址不属于 PMC 图像服务');
     const res=await fetch(url,{signal:AbortSignal.timeout(45000),redirect:'error'});if(!res.ok)throw new Error(`主图获取失败（HTTP ${res.status}）`);
     data=Buffer.from(await res.arrayBuffer());if(data.length>20000000)throw new Error('单张图像超过 20MB，无法提交模型');
     type=imageMimeType(data);
     const md5=url.searchParams.get('md5');
     if(md5&&createHash('md5').update(data).digest('hex')!==md5)throw new Error('主图内容校验失败');
-    mkdirSync(path.join(root,'data','figures'),{recursive:true});writeFileSync(path.join(root,'data','figures',row.id),data);
+    mkdirSync(storagePath(root,'data','figures'),{recursive:true});writeFileSync(storagePath(root,'data','figures',row.id),data);
     db.prepare("UPDATE figures SET image_path=?,image_type=?,status='pending' WHERE id=?").run(row.id,type,row.id);
     continue;
    }
    const paper=getPaper(db,row.paper_id)!;const model=activeAI().figure_model;
    const analysis=await generateFigureAnalysis({...row,source_page:row.source_page||null},paper,{data,type});
-   db.prepare("UPDATE figures SET status='ready',analysis=?,error=NULL,model=?,generated_at=? WHERE id=?").run(JSON.stringify(analysis),model,new Date().toISOString(),row.id);
-  }catch(e:any){db.prepare("UPDATE figures SET status='error',error=? WHERE id=?").run(e.message,row.id);}
+   db.prepare("UPDATE figures SET status='ready',analysis=?,error=NULL,model=?,generated_at=?,analysis_requested=0 WHERE id=?").run(JSON.stringify(analysis),model,new Date().toISOString(),row.id);
+  }catch(e:any){db.prepare("UPDATE figures SET status='error',error=?,analysis_requested=0 WHERE id=?").run(e.message,row.id);}
  }}finally{figureWorkers.delete(db);}
 }

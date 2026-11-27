@@ -7,13 +7,15 @@ import {z} from 'zod';
 import type {DB} from './core.ts';
 import {downloadInfo,downloadState,downloadedPath,requestDownload} from './downloads.ts';
 import {activeAI,textCompletion,type ChatMessage,type AIConfig} from './ai.ts';
-import {readingScope} from './reading-scope.ts';
+import {downloadScope} from './reading-scope.ts';
+import {scriptPath,storagePath} from './storage-paths.ts';
 
 export const uploadStatuses=new Set(['needs_browser','unavailable','error','interrupted']);
 const indexing=new WeakMap<DB,Map<string,Promise<void>>>();
 const indexingWorkers=new WeakSet<DB>();
 const asking=new Set<string>();
 const uploading=new Set<string>();
+export function hasActiveDocumentJobs(db:DB){return indexingWorkers.has(db)||Boolean(indexing.get(db)?.size)||asking.size>0||uploading.size>0;}
 export class DocumentError extends Error{constructor(message:string,public status:400|404|409|422|502){super(message);}}
 export const pagesSchema=z.array(z.object({page:z.number().int().positive(),text:z.string()})).min(1).max(1000);
 export type DocumentPage=z.infer<typeof pagesSchema>[number];
@@ -21,7 +23,7 @@ const extractSchema=z.object({ok:z.literal(true),pages:pagesSchema});
 
 function extract(root:string,file:string,paper:any):Promise<DocumentPage[]>{
  return new Promise((resolve,reject)=>{
-  const child=spawn(pythonExecutable(),[path.join(root,'scripts','read_document.py')],{stdio:['pipe','pipe','pipe']});
+  const child=spawn(pythonExecutable(),[scriptPath(root,'scripts','read_document.py')],{stdio:['pipe','pipe','pipe']});
   let output='';let expired=false;
   const timer=setTimeout(()=>{expired=true;child.kill('SIGKILL');},120000);
   child.stdout.on('data',data=>{output+=data;if(output.length>16000000){expired=true;child.kill('SIGKILL');}});
@@ -79,7 +81,7 @@ export async function pumpDocumentIndexes(db:DB,root:string){
    const paper=db.prepare(`SELECT p.id,p.title,p.doi FROM downloads d JOIN papers p ON p.id=d.paper_id
      LEFT JOIN pdf_documents pdf ON pdf.paper_id=p.id
      WHERE d.status='ready' AND d.index_error IS NULL AND (pdf.file_name IS NULL OR pdf.file_name<>d.file_name)
-       AND (d.automatic=0 OR (${readingScope(db)}))
+       AND (d.automatic=0 OR (${downloadScope(db)}))
      ORDER BY p.received_at DESC,p.published DESC,p.id DESC LIMIT 1`).get();
    if(!paper)break;
    const id=String(paper.id);
@@ -106,13 +108,13 @@ export async function ensureDocument(db:DB,root:string,id:string){
  return documentState(db,root,id);
 }
 export async function uploadDocument(db:DB,root:string,id:string,bytes:Buffer){
- if(!downloadInfo().available)throw new DocumentError('请先安装 PDF 依赖，再上传原文',409);
+ if(!downloadInfo().available)throw new DocumentError(process.env.PAPER_MAIL_DESKTOP==='1'?'PDF 处理组件未就绪，请重启 Paper-mail':'请先运行 npm run setup:python，再上传原文',409);
  const current=downloadState(db,id);
  if(!uploadStatuses.has(current.status))throw new DocumentError('仅在自动获取未成功后上传 PDF',409);
  if(indexing.get(db)?.has(id)||asking.has(id)||uploading.has(id))throw new DocumentError('本篇文献正在处理，请稍候',409);
  if(bytes.length===0||bytes.length>50*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')throw new DocumentError('请上传 50 MB 以内的 PDF 文件',400);
  const paper:any=db.prepare('SELECT title,doi FROM papers WHERE id=?').get(id);if(!paper)throw new DocumentError('论文不存在',404);
- const dir=path.join(root,'data','downloads',id.replace('pmid:',''));mkdirSync(dir,{recursive:true});
+ const dir=storagePath(root,'data','downloads',id.replace('pmid:',''));mkdirSync(dir,{recursive:true});
  const temporary=path.join(dir,'upload-'+randomUUID()+'.pdf');
  writeFileSync(temporary,bytes,{mode:0o600});
  uploading.add(id);

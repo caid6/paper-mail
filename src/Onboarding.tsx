@@ -1,15 +1,17 @@
-import {BookOpen, ChevronRight, Clock, Filter, PlugZap, Tags} from 'lucide-react';
+import {BookOpen, CheckCircle2, ChevronRight, Clock, Filter, PlugZap, Tags} from 'lucide-react';
+import type {State} from './types';
 
 export type SetupDestination = 'api' | 'topics' | 'library' | 'delivery';
 
 const steps = [
-  {id: 'api', title: '连接 AI 模型', detail: '填入自己的 API 地址和密钥，选择模型后验证并保存。只用 PubMed 检索和原文摘要时可以跳过。', icon: PlugZap},
-  {id: 'topics', title: '添加研究方向', detail: '描述你想追踪的课题，让模型生成检索式。也可以粘贴自己的 PubMed 检索式，验证后保存。', icon: Tags},
-  {id: 'library', title: '筛选与初始化', detail: '按需设定期刊和影响因子。想回看过去的论文，可选日期范围建立第一批收件箱。', icon: Filter},
-  {id: 'delivery', title: '安排每日收信', detail: '设定自动收取的时间和时区。也可从收件箱手动收取最新论文。', icon: Clock},
+  {id: 'api', title: '连接 AI 模型', detail: '填写 OpenAI 兼容服务地址、密钥和模型，验证后保存。', icon: PlugZap},
+  {id: 'topics', title: '添加研究方向', detail: '生成或填写 PubMed 检索式，验证并保存至少一个方向。', icon: Tags},
+  {id: 'library', title: '筛选与初始化', detail: '设置文献筛选条件和日期范围，完成文献库初始化。', icon: Filter},
+  {id: 'delivery', title: '安排每日收信', detail: '设定收取时间、时区和每次检查篇数，然后保存。', icon: Clock},
 ] as const;
 
-export function Onboarding({onOpen, onDone, saving}: {
+export function Onboarding({setup, onOpen, onDone, saving}: {
+  setup: State['setup'];
   onOpen: (destination: SetupDestination) => void;
   onDone: () => void;
   saving: boolean;
@@ -21,7 +23,7 @@ export function Onboarding({onOpen, onDone, saving}: {
           <button type="button" onClick={() => onOpen(id)} disabled={saving} aria-label={title}>
             <Icon size={18} aria-hidden="true"/>
             <span><strong>{title}</strong><span>{detail}</span></span>
-            <ChevronRight size={16} aria-hidden="true"/>
+            {setup[id]?<CheckCircle2 className="onboarding-step-done" size={17} aria-label="已完成"/>:<ChevronRight size={16} aria-hidden="true"/>}
           </button>
         </li>)}
       </ul>
@@ -31,7 +33,7 @@ export function Onboarding({onOpen, onDone, saving}: {
       </div>
     </div>
     <footer className="onboarding-footer">
-      <button type="button" className="button primary" onClick={onDone} disabled={saving}>进入收件箱</button>
+      {setup.complete?<button type="button" className="button primary" onClick={onDone} disabled={saving}>进入收件箱</button>:<span role="status">还需完成：{steps.filter(step=>!setup[step.id]).map(step=>step.title).join('、')}</span>}
     </footer>
   </>;
 }

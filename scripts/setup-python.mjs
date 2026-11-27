@@ -1,12 +1,12 @@
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { lstatSync, mkdirSync, mkdtempSync, renameSync, rmSync } from 'node:fs';
-import { checkPython, projectPython, projectRoot } from './python-runtime.mjs';
+import { checkPython, projectPython, resourcesRoot, userDataRoot } from './python-runtime.mjs';
 
 const external = process.env.PAPER_DOWNLOAD_PYTHON;
 const python = external || projectPython;
-const venv = path.join(projectRoot, '.venv');
-const requirements = path.join(projectRoot, 'requirements.txt');
+const venv = path.join(userDataRoot, '.venv');
+const requirements = path.join(resourcesRoot, 'requirements.txt');
 const run = (program, args) => execFileSync(program, args, {stdio:'inherit'});
 
 function usable(command, modules = false) {
@@ -51,7 +51,7 @@ function setup() {
         return;
       }
       if (lstatSync(venv, {throwIfNoEntry:false})) {
-        const runtime = path.join(projectRoot, '.runtime');
+        const runtime = path.join(userDataRoot, '.runtime');
         mkdirSync(runtime, {recursive:true});
         backupDirectory = mkdtempSync(path.join(runtime, 'python-backup-'));
         renameSync(venv, path.join(backupDirectory, '.venv'));
@@ -63,7 +63,7 @@ function setup() {
     installDependencies();
     checkPython(python, true);
     console.log('PDF 环境已就绪。');
-    if (backupDirectory) console.log('原虚拟环境已移至 ' + path.relative(projectRoot, backupDirectory));
+    if (backupDirectory) console.log('原虚拟环境已移至 ' + path.relative(userDataRoot, backupDirectory));
   } catch (error) {
     if (rebuilding) {
       rmSync(venv, {recursive:true, force:true});

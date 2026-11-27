@@ -10,7 +10,7 @@ import {api,paperPath} from './api';
 import './paper-reading.css';
 GlobalWorkerOptions.workerSrc=workerUrl;
 export type DocumentState={
- download:{status:string;source?:string;file_url?:string;error?:string;handoff_url?:string;attempts?:{source:string;status:string;detail?:string}[]};
+ download:{status:string;source?:string;file_url?:string;error?:string;handoff_url?:string;queue_position?:number|null;attempts?:{source:string;status:string;detail?:string}[]};
  document:{status:string;sha256?:string;page_count?:number;unreadable_pages?:number[];file_url?:string;error?:string};
  asking:boolean;
  pdf_environment_ready:boolean;
@@ -112,7 +112,7 @@ export default function PaperReading({paper,state,currentModel,aiConfigured,onCl
      {busy&&<div className="chat-pending">{pendingQuestion&&<div className="chat-question">{pendingQuestion}</div>}<p className="chat-waiting" role="status"><LoaderCircle size={16} className="spin"/>正在思考…</p></div>}
     </div>
     {error&&<p className="study-error" role="alert">{error}</p>}
-    {!canAsk&&<p className="study-error">{state.document.status==='environment_required'?'安装 PDF 依赖后即可解析全文。':!aiConfigured?'在「API 与模型」配置文字模型后即可提问。':state.document.status==='error'?'全文文本解析失败。':'全文文本解析完成后即可提问。'}</p>}
+    {!canAsk&&<p className="study-error">{state.document.status==='environment_required'?'PDF 处理组件未就绪，请重启 Paper-mail。':!aiConfigured?'在「API 与模型」配置文字模型后即可提问。':state.document.status==='error'?'全文文本解析失败。':'全文文本解析完成后即可提问。'}</p>}
     {canAsk&&<form className="chat-composer" onSubmit={e=>{e.preventDefault();void ask();}}>
      {selection&&<button className="selection-question" type="button" onClick={()=>{setQuestion('请解释 PDF 第 '+selection.page+' 页这段原文：\n'+selection.text);setMobileTab('chat');composer.current?.focus();}}>解释选中文字</button>}
      <textarea ref={composer} aria-label="向 AI 提问" maxLength={3000} value={question} onChange={e=>setQuestion(e.target.value)} onCompositionStart={()=>{composing.current=true;}} onCompositionEnd={()=>{composing.current=false;}} placeholder="向这篇论文提问…" onKeyDown={e=>{if(e.key==='Enter'&&!e.shiftKey&&!composing.current&&!e.nativeEvent.isComposing&&e.keyCode!==229){e.preventDefault();void ask();}}}/>
