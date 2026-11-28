@@ -126,7 +126,7 @@ export function describeCandidate(db:DB,p:PaperInput){
  };
 }
 
-export function importPaper(db:DB,p:PaperInput,now=new Date().toISOString()){
+export function importPaper(db:DB,p:PaperInput,now=new Date().toISOString(),saveAttachment?:(id:string)=>void){
  db.exec('BEGIN IMMEDIATE');
  try{
   const existing=findStoredPaper(db,p);
@@ -134,6 +134,7 @@ export function importPaper(db:DB,p:PaperInput,now=new Date().toISOString()){
   const {id}=upsertPaperRecord(db,p,now);
   const status=existing&&(existing.archived||!existing.in_library)?'restored':wasVisible?'existing':'added';
   db.prepare("UPDATE papers SET manual_added=1,in_library=1,archived=0,archive_origin=NULL,received_at=CASE WHEN ? THEN ? ELSE received_at END WHERE id=?").run(Number(status!=='existing'),now,id);
+  saveAttachment?.(id);
   db.exec('COMMIT');
   return {id,status};
  }catch(error){db.exec('ROLLBACK');throw error;}

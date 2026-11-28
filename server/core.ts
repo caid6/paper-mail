@@ -185,7 +185,7 @@ export function upsertPaperRecord(db:DB,p:PaperInput,now:string){
     db.prepare("UPDATE papers SET source=?,pmid=?,journal=?,publication_date=?,indexed_at=?,doi=?,pmcid=?,pub_types=?,full_text_url=? WHERE id=? AND updated=?").run(p.source||'arxiv',pmid,p.journal||'',p.publication_date??p.published,p.indexed_at??'',p.doi||'',p.pmcid||'',JSON.stringify(p.pub_types||[]),p.full_text_url||'',p.id,p.updated);
     if(p.journal_issns)db.prepare('UPDATE papers SET journal_issns=? WHERE id=? AND updated=?').run(JSON.stringify(p.journal_issns),p.id,p.updated);
     enrichPaper(db,p.id);
-    if(!p.abstract)db.prepare("UPDATE papers SET digest_status='unavailable',digest_error='来源未提供作者摘要，请打开全文阅读' WHERE id=? AND updated=?").run(p.id,p.updated);
+    if(!p.abstract&&p.source!=='manual-pdf')db.prepare("UPDATE papers SET digest_status='unavailable',digest_error='来源未提供作者摘要，请打开全文阅读' WHERE id=? AND updated=?").run(p.id,p.updated);
     if(existing&&(indexedByPubmed||p.updated>=String(existing.updated))&&(existing.updated!==p.updated||existing.title!==p.title||existing.abstract!==p.abstract))db.prepare("UPDATE relevance_reviews SET status='pending',verdict=NULL,reason='',evidence='',model=NULL,reviewed_at=NULL,error=NULL WHERE paper_id=?").run(p.id);
   return {id,added:!existing,wasInLibrary};
 }

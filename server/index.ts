@@ -6,13 +6,14 @@ import path from 'node:path';
 import { z } from 'zod';
 import { connect, settings, setSetting, subscriptions, hasEnabledSubscriptions, upsertPaper, parseArxiv, hydrate, dailyDue, localClock, type PaperInput } from './core.ts';
 import { fetchPubmed, previewPubmed, matchPubmedIds, fetchPubmedMetadata, prepareJournalSearch, pubmedDateClause } from './pubmed.ts';
-import { generateDigest, translateTitle, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
+import { generateDigest, generateDocumentDigest, translateTitle, generateRelevanceReview, activeAI, aiConfigured, aiConfig, aiInputSchema, aiServiceSchema, resolveAI, testAI, listModels, generateSearch } from './ai.ts';
 import {listSchema,listPapers,getPaper,topicCounts,saveSubscription,mailboxCounts,setArchive,recordQualityRemoval,qualityStats,editPaperTopics,paperTopicChangesSchema} from './library.ts';
 import {enrichLibrary,enrichPaper,journalFilter,mailboxJournalWhere,journalInfo,matchJournal,passesJournal,journalOptions,requireJournalIds,searchJournals} from './journals.ts';
 import {downloadInfo,downloadState,requestDownload,downloadedPath} from './downloads.ts';
 import {figureState,queueFulltext,pumpFigures,pumpPublisherFigures,retryPublisherFigures} from './figures.ts';
 import {replaceLibrary,type Initialization,type TopicMatches} from './initialization.ts';
-import {ensureDocument,documentState,uploadDocument,chatHistory,askDocument,clearChat,hasActiveDocumentJobs,DocumentError} from './documents.ts';
+import {ensureDocument,documentState,uploadDocument,inspectPdf,saveUploadedDocument,pagesSchema,chatHistory,askDocument,clearChat,hasActiveDocumentJobs,DocumentError} from './documents.ts';
+import {paperFromUploadedPdf,uploadedPaperRecord} from './pdf-import.ts';
 import {prepareReading,readingPreparationStats} from './reading-preparation.ts';
 import {describeCandidate,importPaper,lookupPapers,InvalidLookupInput} from './manual-import.ts';
 
@@ -94,7 +95,13 @@ async function pumpDigests(){
     if(!row)break;
     db.prepare("UPDATE papers SET digest_status='generating',digest_error=NULL WHERE id=?").run(row.id as string);workers++;
     const paper=hydrate(db,row);const version=paper.updated;const config=activeAI();const model=config.model;
-    void generateDigest(paper,config).then(d=>{
+    const generate=async()=>{
+      if(paper.source!=='manual-pdf')return generateDigest(paper,config);
+      const document=db.prepare('SELECT pages FROM pdf_documents WHERE paper_id=?').get(paper.id);
+      if(!document)throw new Error('本地 PDF 索引缺失，请重新上传文献');
+      return generateDocumentDigest(paper,pagesSchema.parse(JSON.parse(String(document.pages))),config);
+    };
+    void generate().then(d=>{
       db.prepare("UPDATE papers SET digest=?,title_zh=?,title_status='ready',title_error=NULL,digest_status='ready',digest_error=NULL,digest_model=?,digest_at=? WHERE id=? AND updated=? AND abstract=? AND title=?").run(JSON.stringify(d),d.title_zh,model,new Date().toISOString(),paper.id,version,paper.abstract,paper.title);
     }).catch(e=>{
       db.prepare("UPDATE papers SET digest_status='error',digest_error=? WHERE id=? AND updated=? AND abstract=? AND title=?").run(e.message,paper.id,version,paper.abstract,paper.title);
@@ -214,6 +221,18 @@ app.post('/api/papers/import',async(req,res)=>{
  void pumpDigests();void pumpTitles();prepareReading(db,root);
  res.status(result.status==='added'?201:200).json(result);
 });
+app.post('/api/papers/upload',express.raw({type:'application/pdf',limit:'50mb'}),async(req,res)=>{
+ if(!Buffer.isBuffer(req.body))return res.status(400).json({error:'请上传 PDF 文件'});
+ const parsed=await inspectPdf(root,req.body);
+ const record=await paperFromUploadedPdf(parsed);
+ const result=await withLibraryLock(()=>importPaper(db,uploadedPaperRecord(db,record,parsed.sha256),new Date().toISOString(),id=>{
+  const previous=db.prepare('SELECT sha256 FROM pdf_documents WHERE paper_id=?').get(id);
+  saveUploadedDocument(db,root,id,req.body,parsed.pages);
+  if(previous?.sha256!==parsed.sha256)db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL,updated=? WHERE id=? AND source='manual-pdf'").run(new Date().toISOString(),id);
+ }));
+ void pumpDigests();void pumpTitles();prepareReading(db,root);
+ res.status(result.status==='added'?201:200).json({...result,uploaded:true});
+});
 app.get('/api/papers/:id',(req,res)=>{const p=getPaper(db,req.params.id);if(!p)return res.status(404).json({error:'论文不存在'});res.json(p);});
 app.get('/api/papers/:id/download', (req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(downloadState(db,req.params.id));});
 app.get('/api/papers/:id/document',(req,res)=>{if(!getPaper(db,req.params.id))return res.status(404).json({error:'论文不存在'});res.json(documentState(db,root,req.params.id));});
@@ -304,7 +323,7 @@ app.patch('/api/papers/:id',(req,res)=>{
 app.post('/api/papers/:id/digest',(req,res)=>{
   const p=db.prepare('SELECT * FROM papers WHERE id=?').get(req.params.id);
   if(!p)return res.status(404).json({error:'论文不存在'});
-  if(!String(p.abstract).trim())return res.status(409).json({error:'PubMed 未提供摘要，请打开全文阅读'});
+  if(!String(p.abstract).trim()&&p.source!=='manual-pdf')return res.status(409).json({error:'来源未提供摘要，请打开全文阅读'});
   if(!aiConfigured())return res.status(409).json({error:'请先在设置 → API 与模型中完成配置'});
   if(p.digest_status!=='generating')db.prepare("UPDATE papers SET digest_status='pending',digest_error=NULL WHERE id=?").run(req.params.id);
   void pumpDigests();res.json({ok:true});

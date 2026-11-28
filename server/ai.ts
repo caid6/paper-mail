@@ -87,6 +87,9 @@ export async function jsonCompletion<T>(schema:z.ZodType<T>,instruction:string,e
 }
 const digestInstruction='你是严谨的中文生物医学论文阅读助手。仅依据给出的标题、作者摘要和元数据，生成简体中文导读。禁止编造数据、实验、指标、代码链接或结论，保留作者原始数字与限定条件。相关性不能写成因果。说明研究场景、设计、数据来源和验证方法。涉及临床应用时，区分内部验证、外部验证、前瞻性评估及真实临床获益。摘要未报告的信息明确标注，不能假装读过全文，不能把模型性能等同于临床有效性。title_zh准确翻译标题；one_liner不超过60字；summary为150至250字通俗概要；problem解释研究问题；method解释设计与方法；findings列出2至4条摘要支持的发现；limitations列出1至3条证据边界和全文核查问题，不把推测写成已证实缺陷；reading_advice建议进一步阅读的章节。';
 export function generateDigest(p:PaperInput,config:AIConfig=activeAI()):Promise<Digest>{return jsonCompletion(digestSchema,digestInstruction,{title:p.title,abstract:p.abstract,authors:p.authors,published:p.publication_date||p.published,journal:p.journal,publication_types:p.pub_types},{config});}
+export function generateDocumentDigest(p:PaperInput,pages:{page:number;text:string}[],config:AIConfig=activeAI()):Promise<Digest>{
+ return jsonCompletion(digestSchema,'你是中文论文阅读助手。依据给出的论文元数据和 PDF 逐页全文生成中文导读。title_zh 准确翻译题名；one_liner 用一句话概括；summary 用150至250字说明研究内容；problem 说明研究问题；method 说明研究设计、数据与方法；findings 用2至4条概括全文支持的主要发现；limitations 用1至3条说明影响结论的证据边界；reading_advice 简要建议阅读的章节。保留原始数字与限定条件，区分作者结论和解释。正文来自 PDF 文本层，不能假装已观察到图像，不编造文本未报告的数据或临床获益。使用简洁自然的中文。',{title:p.title,authors:p.authors,journal:p.journal,publication_date:p.publication_date,pages},{config});
+}
 export const titleTranslationSchema=z.object({title_zh:z.string().min(1).max(1000)});
 export function translateTitle(title:string,config:AIConfig=activeAI()):Promise<{title_zh:string}>{
  return jsonCompletion(titleTranslationSchema,'将给定的医学论文标题准确翻译为简体中文。只翻译题名，不扩写、不总结，不添加原题没有的信息。保留人名、基因/蛋白名称、模型名称、缩写和必要的英文专名。返回 title_zh。',{title},{config,maxOutputTokens:1200});

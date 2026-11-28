@@ -19,9 +19,11 @@ export function hasActiveDocumentJobs(db:DB){return indexingWorkers.has(db)||Boo
 export class DocumentError extends Error{constructor(message:string,public status:400|404|409|422|502){super(message);}}
 export const pagesSchema=z.array(z.object({page:z.number().int().positive(),text:z.string()})).min(1).max(1000);
 export type DocumentPage=z.infer<typeof pagesSchema>[number];
-const extractSchema=z.object({ok:z.literal(true),pages:pagesSchema});
+const metadataSchema=z.object({title:z.string(),author:z.string(),subject:z.string()});
+const extractSchema=z.object({ok:z.literal(true),pages:pagesSchema,metadata:metadataSchema});
+export type ParsedPdf={pages:DocumentPage[];metadata:{title:string;author:string;subject:string};sha256:string};
 
-function extract(root:string,file:string,paper:any):Promise<DocumentPage[]>{
+function extract(root:string,file:string,paper:any,verifyIdentity=true):Promise<ParsedPdf>{
  return new Promise((resolve,reject)=>{
   const child=spawn(pythonExecutable(),[scriptPath(root,'scripts','read_document.py')],{stdio:['pipe','pipe','pipe']});
   let output='';let expired=false;
@@ -37,10 +39,14 @@ function extract(root:string,file:string,paper:any):Promise<DocumentPage[]>{
     if(code!==0||!parsed.ok)throw new DocumentError(parsed.error||'PDF 解析失败',422);
     const result=extractSchema.parse(parsed);
     if(!result.pages.every((p,i)=>p.page===i+1))throw new Error('PDF 页码不完整');
-    resolve(result.pages);
+    resolve({
+      pages:result.pages,
+      metadata:result.metadata,
+      sha256:createHash('sha256').update(readFileSync(file)).digest('hex'),
+    });
    }catch(e:any){reject(e instanceof DocumentError?e:new Error(e instanceof z.ZodError?'PDF 解析结果无效':e.message||'PDF 解析失败'));}
   });
-  child.stdin.end(JSON.stringify({file,doi:paper.doi||'',title:paper.title}));
+  child.stdin.end(JSON.stringify({file,doi:paper.doi||'',title:paper.title||'',verify_identity:verifyIdentity}));
  });
 }
 function saveDocument(db:DB,id:string,file:string,pages:DocumentPage[]){
@@ -64,7 +70,7 @@ function indexDocument(db:DB,root:string,id:string,file:string,paper:{title:unkn
  const current=jobs.get(id);
  if(current)return current;
  const job=extract(root,file,paper)
-  .then(pages=>saveDocument(db,id,file,pages))
+  .then(result=>saveDocument(db,id,file,result.pages))
   .catch((error:Error)=>{db.prepare('UPDATE downloads SET index_error=? WHERE paper_id=?').run(error.message,id);})
   .finally(()=>jobs.delete(id));
  jobs.set(id,job);
@@ -107,27 +113,60 @@ export async function ensureDocument(db:DB,root:string,id:string){
  void indexDocument(db,root,id,file,paper);
  return documentState(db,root,id);
 }
+function validatePdfBytes(bytes:Buffer){
+ if(bytes.length===0||bytes.length>50*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')throw new DocumentError('请上传 50 MB 以内的 PDF 文件',400);
+}
+
+export async function inspectPdf(root:string,bytes:Buffer):Promise<ParsedPdf>{
+ if(!downloadInfo().available)throw new DocumentError(process.env.PAPER_MAIL_DESKTOP==='1'?'PDF 处理组件未就绪，请重启 Paper-mail':'请先运行 npm run setup:python，再上传原文',409);
+ validatePdfBytes(bytes);
+ const dir=storagePath(root,'data','uploads');mkdirSync(dir,{recursive:true});
+ const temporary=path.join(dir,'inspect-'+randomUUID()+'.pdf');
+ writeFileSync(temporary,bytes,{mode:0o600});
+ try{return await extract(root,temporary,{},false);}
+ finally{if(existsSync(temporary))unlinkSync(temporary);}
+}
+
+export function saveUploadedDocument(db:DB,root:string,id:string,bytes:Buffer,pages:DocumentPage[]){
+ if(!downloadInfo().available)throw new DocumentError(process.env.PAPER_MAIL_DESKTOP==='1'?'PDF 处理组件未就绪，请重启 Paper-mail':'请先运行 npm run setup:python，再上传原文',409);
+ validatePdfBytes(bytes);
+ if(indexing.get(db)?.has(id)||asking.has(id)||uploading.has(id))throw new DocumentError('本篇文献正在处理，请稍候',409);
+ const current=downloadState(db,id);
+ if(current.status==='running')throw new DocumentError('本篇文献正在下载，请稍候',409);
+ const dir=storagePath(root,'data','downloads',id.replace('pmid:',''));mkdirSync(dir,{recursive:true});
+ const temporary=path.join(dir,'upload-'+randomUUID()+'.pdf');
+ writeFileSync(temporary,bytes,{mode:0o600});
+ uploading.add(id);
+ try{
+  const hash=createHash('sha256').update(bytes).digest('hex');const final=path.join(dir,'uploaded-'+hash+'.pdf');
+  if(existsSync(final))unlinkSync(temporary);else renameSync(temporary,final);
+  const completedAt=new Date().toISOString();
+  db.exec('SAVEPOINT uploaded_document');
+  try{
+   db.prepare(`INSERT INTO downloads(paper_id,status,source,source_url,file_name,error,handoff_url,created_at,completed_at,attempts,automatic)
+     VALUES(?,'ready','manual-upload',NULL,?,NULL,NULL,? ,?,'[]',0)
+     ON CONFLICT(paper_id) DO UPDATE SET status='ready',source='manual-upload',source_url=NULL,file_name=excluded.file_name,error=NULL,handoff_url=NULL,completed_at=excluded.completed_at,attempts='[]',automatic=0`).run(id,path.basename(final),completedAt,completedAt);
+   saveDocument(db,id,final,pages);db.exec('RELEASE uploaded_document');
+  }catch(e){db.exec('ROLLBACK TO uploaded_document; RELEASE uploaded_document');throw e;}
+  return documentState(db,root,id);
+ }finally{uploading.delete(id);if(existsSync(temporary))unlinkSync(temporary);}
+}
+
 export async function uploadDocument(db:DB,root:string,id:string,bytes:Buffer){
  if(!downloadInfo().available)throw new DocumentError(process.env.PAPER_MAIL_DESKTOP==='1'?'PDF 处理组件未就绪，请重启 Paper-mail':'请先运行 npm run setup:python，再上传原文',409);
  const current=downloadState(db,id);
  if(!uploadStatuses.has(current.status))throw new DocumentError('仅在自动获取未成功后上传 PDF',409);
  if(indexing.get(db)?.has(id)||asking.has(id)||uploading.has(id))throw new DocumentError('本篇文献正在处理，请稍候',409);
- if(bytes.length===0||bytes.length>50*1024*1024||bytes.subarray(0,5).toString()!=='%PDF-')throw new DocumentError('请上传 50 MB 以内的 PDF 文件',400);
+ validatePdfBytes(bytes);
  const paper:any=db.prepare('SELECT title,doi FROM papers WHERE id=?').get(id);if(!paper)throw new DocumentError('论文不存在',404);
  const dir=storagePath(root,'data','downloads',id.replace('pmid:',''));mkdirSync(dir,{recursive:true});
  const temporary=path.join(dir,'upload-'+randomUUID()+'.pdf');
  writeFileSync(temporary,bytes,{mode:0o600});
  uploading.add(id);
  try{
-  const pages=await extract(root,temporary,paper);
-  const hash=createHash('sha256').update(bytes).digest('hex');const final=path.join(dir,'uploaded-'+hash+'.pdf');
-  renameSync(temporary,final);
-  db.exec('BEGIN IMMEDIATE');
-  try{
-   db.prepare("UPDATE downloads SET status='ready',source='manual-upload',source_url=NULL,file_name=?,error=NULL,handoff_url=NULL,completed_at=? WHERE paper_id=?").run(path.basename(final),new Date().toISOString(),id);
-   saveDocument(db,id,final,pages);db.exec('COMMIT');
-  }catch(e){db.exec('ROLLBACK');throw e;}
-  return documentState(db,root,id);
+  const parsed=await extract(root,temporary,paper);
+  uploading.delete(id);
+  return saveUploadedDocument(db,root,id,bytes,parsed.pages);
  }finally{uploading.delete(id);if(existsSync(temporary))unlinkSync(temporary);}
 }
 function storedAnswer(value:string):string{

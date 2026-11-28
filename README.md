@@ -4,7 +4,7 @@
 
 研邮是一个在自己电脑上运行的 PubMed 文献收件箱，适合需要持续跟进专科研究的临床医生、研究生和生物医学研究者。设好关注的课题和期刊，每天打开收件箱就能看有哪些新论文。
 
-[下载 macOS 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg) · [Windows 桌面版构建说明](#windows-桌面版) · [全部版本](https://github.com/caid6/paper-mail/releases) · [功能介绍](#功能介绍) · [安装与启动](#安装与启动)
+[下载 macOS 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.17.1/Paper-mail-2.17.1-arm64.dmg) · [下载 Windows 桌面版](https://github.com/caid6/paper-mail/releases/download/v2.17.1/Paper-mail-2.17.1-Setup-x64.exe) · [全部版本](https://github.com/caid6/paper-mail/releases) · [功能介绍](#功能介绍) · [安装与启动](#安装与启动)
 
 [![研邮主界面，左侧是研究方向和文件夹，中间是论文收件箱，右侧是论文摘要和 PDF 阅读入口](docs/images/paper-mail-inbox.webp)](docs/images/paper-mail-inbox.webp)
 
@@ -20,9 +20,9 @@
 
 ## 安装与启动
 
-**macOS 桌面版（Apple Silicon，M 系列芯片）。** [下载 Paper-mail 2.16.4 安装包](https://github.com/caid6/paper-mail/releases/download/v2.16.4/Paper-mail-2.16.4-arm64.dmg)。打开 DMG，将 Paper-mail 拖入「应用程序」，再从「应用程序」启动。已内置 PDF 运行环境，无需安装 Node.js、Python 或单独的 PDF 服务。目前发布的安装包适用于 Apple Silicon Mac，Intel Mac 可使用下方的网页版源码安装方式。
+**macOS 桌面版（Apple Silicon，M 系列芯片）。** [下载 Paper-mail 2.17.1 安装包](https://github.com/caid6/paper-mail/releases/download/v2.17.1/Paper-mail-2.17.1-arm64.dmg)。打开 DMG，将 Paper-mail 拖入「应用程序」，再从「应用程序」启动。已内置 PDF 运行环境，无需安装 Node.js、Python 或单独的 PDF 服务。目前发布的安装包适用于 Apple Silicon Mac，Intel Mac 可使用下方的网页版源码安装方式。
 
-此安装包尚未进行 Apple 开发者签名和公证。若 macOS 阻止首次打开，可在「系统设置 → 隐私与安全性」确认来源后选择「仍要打开」。[安装包与 SHA-256 校验文件](https://github.com/caid6/paper-mail/releases/tag/v2.16.4)
+此安装包尚未进行 Apple 开发者签名和公证。若 macOS 阻止首次打开，可在「系统设置 → 隐私与安全性」确认来源后选择「仍要打开」。[安装包与 SHA-256 校验文件](https://github.com/caid6/paper-mail/releases/tag/v2.17.1)
 
 **本机网页版。** 需要 **Node.js 22.13+**；PDF 处理还需要 **Python 3.11+** 及 PDF 依赖。[Node.js 下载](https://nodejs.org/en/download) · [Python 下载](https://www.python.org/downloads/macos/)
 
@@ -37,6 +37,8 @@ npm run desktop:dist
 
 ### Windows 桌面版
 
+[下载 Paper-mail 2.17.1 安装包（Windows x64）](https://github.com/caid6/paper-mail/releases/download/v2.17.1/Paper-mail-2.17.1-Setup-x64.exe)。安装后无需另装 Node.js 或 Python。
+
 在 Windows 机器安装 [Node.js 22.13+](https://nodejs.org/en/download) 和 [uv](https://docs.astral.sh/uv/getting-started/installation/)，然后在项目目录执行：
 
 ```powershell
@@ -44,7 +46,7 @@ npm ci
 npm run desktop:dist:win
 ```
 
-安装包生成在 `release/Paper-mail-2.17.0-Setup-x64.exe`。打包过程会下载并内置 Python 3.12、PyMuPDF、pypdf 和证书，安装后的用户无需另装 Python。开发时可运行 `npm run desktop:dev`；若需要 PDF 处理，先安装 Python 3.11+ 并运行 `npm run setup:python`。Windows 桌面版的文献库、PDF 和模型配置默认保存在 `%APPDATA%/Paper-mail`，也可以在「设置 → 数据与导出」迁移到其他文件夹。当前构建未配置 Windows 代码签名，内部测试时系统可能显示未知发布者提示。
+安装包生成在 `release/Paper-mail-2.17.1-Setup-x64.exe`。打包过程会下载并内置 Python 3.12、PyMuPDF、pypdf 和证书，安装后的用户无需另装 Python。开发时可运行 `npm run desktop:dev`；若需要 PDF 处理，先安装 Python 3.11+ 并运行 `npm run setup:python`。Windows 桌面版的文献库、PDF 和模型配置默认保存在 `%APPDATA%/Paper-mail`，也可以在「设置 → 数据与导出」迁移到其他文件夹。当前构建未配置 Windows 代码签名，内部测试时系统可能显示未知发布者提示。
 
 ```sh
 mkdir -p ~/Applications
@@ -78,7 +80,7 @@ npm start
 
 ## 阅读论文
 
-在收件箱右上方点 **手工添加**。选择 **检索论文** 时输入题目、PMID、DOI 或 DOI 链接，核对结果后点击 **添加**；选择 **上传 PDF** 时直接选择本地论文文件。上传后会自动识别文献身份、保存本地 PDF、提取逐页正文并建立索引，随后生成中文导读和图文解读。论文按收信时间入箱，独立于订阅和影响因子设置。检索添加的论文仍会在后台尝试下载公开 PDF。
+在收件箱右上方点 **手工添加**。选择 **检索论文** 时输入题目、PMID、DOI 或 DOI 链接，核对结果后点击 **添加**；选择 **上传 PDF** 时直接选择本地论文文件。上传后会自动识别文献身份、保存本地 PDF、提取逐页正文并建立索引，随后基于全文生成中文导读，并解读可识别的主图。论文按收信时间入箱，独立于订阅和影响因子设置。检索添加的论文仍会在后台尝试下载公开 PDF。
 
 - **中文导读。** 收件箱按 **收信时间** 倒序，每页默认显示 50 篇。点开邮件后，右侧标注论文发表日期，并可阅读研究问题、核心方法、主要发现和证据局限。打开 **原文摘要** 可以核对作者的表述。
 - **图文解读。** 按核心结论、读图要点和子图说明解读可用的 PMC 主图、Nature Portfolio 公开主图或本机 PDF 主图，正文与收件箱采用同样的 14px 字号。点 **全屏阅读** 或直接点击图片，可同时查看原图和中文解读，支持切换主图、缩放图片；按 Esc 退出。作者图注可展开查看，已有内容可点 **重新解读** 按新的精简格式生成。使用 PDF 时，显示含主图的整页，以保留子图和图注。
